@@ -1,11 +1,14 @@
-"""Transactional email via SMTP. Falls back to logging when SMTP is not configured."""
+"""Transactional email via Resend (HTTPS) or SMTP. Dry-run when neither is configured."""
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import smtplib
 import threading
+import urllib.error
+import urllib.request
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
@@ -18,6 +21,46 @@ def _smtp_configured() -> bool:
     return bool(current_app.config.get("SMTP_HOST") and current_app.config.get("MAIL_FROM"))
 
 
+def _resend_from(app_name: str) -> str:
+    explicit = (current_app.config.get("RESEND_FROM") or "").strip()
+    if explicit:
+        return explicit
+    return f"{app_name} <onboarding@resend.dev>"
+
+
+def _send_via_resend(to: str, subject: str, html_body: str, text_body: str, mail_from: str) -> bool:
+    payload = json.dumps(
+        {
+            "from": mail_from,
+            "to": [to],
+            "subject": subject,
+            "html": html_body,
+            "text": text_body,
+        }
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        "https://api.resend.com/emails",
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {current_app.config.get('RESEND_API_KEY')}",
+            "Content-Type": "application/json",
+            "User-Agent": "knovera",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            logger.info("Email sent via Resend to %s (%s) status=%s", to, subject, response.status)
+            return True
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", "replace")[:500]
+        logger.error("Resend a refusé l'email vers %s : %s %s", to, exc.code, detail)
+        return False
+    except Exception:
+        logger.exception("Échec Resend vers %s", to)
+        return False
+
+
 def send_email(to: str, subject: str, html_body: str, text_body: str | None = None) -> bool:
     """Send an email. Returns True if sent (or logged in dry-run). Never raises to callers."""
     to = (to or "").strip().lower()
@@ -28,8 +71,12 @@ def send_email(to: str, subject: str, html_body: str, text_body: str | None = No
         return False
 
     app_name = current_app.config.get("APP_NAME", "Knovera")
-    mail_from = current_app.config.get("MAIL_FROM") or f"noreply@{app_name.lower().replace(' ', '')}.local"
     text_body = text_body or _html_to_text(html_body)
+
+    if current_app.config.get("RESEND_API_KEY"):
+        return _send_via_resend(to, subject, html_body, text_body, _resend_from(app_name))
+
+    mail_from = current_app.config.get("MAIL_FROM") or f"noreply@{app_name.lower().replace(' ', '')}.local"
 
     if not _smtp_configured():
         logger.info("[email:dry-run] to=%s subject=%s\n%s", to, subject, text_body[:2000])

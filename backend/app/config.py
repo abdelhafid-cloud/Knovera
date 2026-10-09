@@ -104,6 +104,8 @@ class Config:
     SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
     SMTP_USE_TLS = os.getenv("SMTP_USE_TLS", "true").lower() == "true"
     MAIL_FROM = os.getenv("MAIL_FROM", "").strip()
+    RESEND_API_KEY = os.getenv("RESEND_API_KEY", "").strip()
+    RESEND_FROM = os.getenv("RESEND_FROM", "").strip()
 
     RATELIMIT_STORAGE_URI = os.getenv("RATELIMIT_STORAGE_URI") or (
         "memory://"
