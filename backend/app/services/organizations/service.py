@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 from app.extensions import db
-from app.models import Invitation, Organization, OrganizationMember, Permission, Role, User
+from app.models import Invitation, KnowledgeBase, Organization, OrganizationMember, Permission, Role, User
 from app.services.organizations import quotas as quota_service
 from app.services.rbac_seed import PERMISSION_SEED, ROLE_PERMISSION_MAP
 from app.utils.security import generate_token, hash_password, hash_token, slugify
@@ -77,8 +77,6 @@ def ensure_super_admin_workspace(user: User) -> tuple[Organization, KnowledgeBas
 
     No default knowledge base is created — the user provisions KBs themselves.
     """
-    from app.models import KnowledgeBase
-
     if not user.is_super_admin:
         raise ValueError("Réservé au super admin")
 
