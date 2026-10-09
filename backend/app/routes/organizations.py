@@ -86,12 +86,13 @@ def create_organization():
 
     # Emails: notify Super Admin + invite org admin
     from flask import current_app
-    from app.services.email import notify_org_admin_invited, notify_super_admin_org_created
+    from app.services.email import notify_org_admin_invited, notify_super_admin_org_created, spawn_email
 
     frontend = (current_app.config.get("FRONTEND_URL") or "http://localhost:3000").rstrip("/")
     created_by = g.current_user.full_name or g.current_user.email
 
-    notify_super_admin_org_created(
+    spawn_email(
+        notify_super_admin_org_created,
         to_email=g.current_user.email,
         org_name=org.name,
         org_slug=org.slug,
@@ -102,7 +103,8 @@ def create_organization():
     sa_email = (g.current_user.email or "").lower()
     fallback = (current_app.config.get("MAIL_FROM") or current_app.config.get("SMTP_USER") or "").lower()
     if fallback and fallback != sa_email and sa_email.endswith(".local"):
-        notify_super_admin_org_created(
+        spawn_email(
+            notify_super_admin_org_created,
             to_email=fallback,
             org_name=org.name,
             org_slug=org.slug,
@@ -112,13 +114,15 @@ def create_organization():
 
     if meta.get("invitation_token") and meta.get("admin_email"):
         invite_url = f"{frontend}/register?token={meta['invitation_token']}"
-        notify_org_admin_invited(
+        spawn_email(
+            notify_org_admin_invited,
             to_email=meta["admin_email"],
             org_name=org.name,
             invite_url=invite_url,
         )
     elif meta.get("admin_created") and meta.get("admin_email"):
-        notify_org_admin_invited(
+        spawn_email(
+            notify_org_admin_invited,
             to_email=meta["admin_email"],
             org_name=org.name,
             login_url=f"{frontend}/login",

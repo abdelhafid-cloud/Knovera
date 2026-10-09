@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import re
 import smtplib
+import threading
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
@@ -21,6 +22,9 @@ def send_email(to: str, subject: str, html_body: str, text_body: str | None = No
     """Send an email. Returns True if sent (or logged in dry-run). Never raises to callers."""
     to = (to or "").strip().lower()
     if not to:
+        return False
+    if to.endswith(".local") or to.endswith(".test") or to.endswith(".invalid"):
+        logger.info("Email ignoré (adresse non routable) to=%s subject=%s", to, subject)
         return False
 
     app_name = current_app.config.get("APP_NAME", "Knovera")
@@ -49,7 +53,7 @@ def send_email(to: str, subject: str, html_body: str, text_body: str | None = No
     use_tls = bool(current_app.config.get("SMTP_USE_TLS", True))
 
     try:
-        with smtplib.SMTP(host, port, timeout=20) as smtp:
+        with smtplib.SMTP(host, port, timeout=8) as smtp:
             if use_tls:
                 smtp.starttls()
             if user:
@@ -94,6 +98,20 @@ def notify_super_admin_org_created(
     </div>
     """
     return send_email(to_email, subject, html)
+
+
+def spawn_email(fn, *args, **kwargs) -> None:
+    """Envoie hors de la requête HTTP. Un SMTP injoignable ne doit pas faire échouer l'API."""
+    app = current_app._get_current_object()
+
+    def _run() -> None:
+        with app.app_context():
+            try:
+                fn(*args, **kwargs)
+            except Exception:
+                logger.exception("Tâche email interrompue")
+
+    threading.Thread(target=_run, daemon=True, name="knovera-email").start()
 
 
 def notify_org_admin_invited(
