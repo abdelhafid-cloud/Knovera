@@ -127,17 +127,15 @@ def permission_codes_for_membership(membership: OrganizationMember | None) -> se
     return {p.code for p in membership.role.permissions}
 
 
+# Admin org : vue globale + membres + accès assistants.
+# Contenu (KB / docs / assistants) réservé au super admin.
 ORG_ADMIN_PERMISSIONS = {
     "org.dashboard.view",
     "org.settings.manage",
     "org.members.manage",
     "org.invitations.manage",
     "documents.list",
-    "documents.upload",
-    "documents.delete",
     "documents.view_content",
-    "knowledge_bases.manage",
-    "assistants.manage",
     "assistants.use",
     "chat.create",
     "conversations.view_own",

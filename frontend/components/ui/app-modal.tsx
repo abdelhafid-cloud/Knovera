@@ -45,7 +45,7 @@ export function AppModal({
         aria-modal="true"
         aria-labelledby={labelledBy}
         className={cn(
-          "relative z-10 w-full max-w-md rounded-xl border border-border bg-card text-card-foreground p-6 shadow-2xl",
+          "relative z-10 w-full max-w-md overflow-hidden rounded-xl border border-border bg-card p-6 text-card-foreground shadow-2xl",
           className
         )}
         onClick={(e) => e.stopPropagation()}

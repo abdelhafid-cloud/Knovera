@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { toast } from "sonner";
 import { Eye, Loader2, MoreHorizontal, Pencil, Trash2, Upload } from "lucide-react";
+import { useAuth } from "@/components/providers/auth-provider";
 import { api } from "@/lib/api";
 import type { DocumentItem, KnowledgeBase } from "@/lib/types";
 import { DashboardShell, EmptyState, PageHeader } from "@/components/layout/app-shell";
@@ -43,6 +44,7 @@ const statusVariant: Record<string, "success" | "warning" | "secondary" | "dange
 };
 
 export default function DocumentsPage() {
+  const { isSuperAdmin } = useAuth();
   const fileRef = useRef<HTMLInputElement>(null);
   const [docs, setDocs] = useState<DocumentItem[]>([]);
   const [kbs, setKbs] = useState<KnowledgeBase[]>([]);
@@ -73,8 +75,49 @@ export default function DocumentsPage() {
     load()
       .catch((e: Error) => toast.error(e.message))
       .finally(() => setLoading(false));
-    const t = setInterval(() => load().catch(() => null), 5000);
-    return () => clearInterval(t);
+
+    const poll = setInterval(() => load().catch(() => null), 15000);
+    const ac = new AbortController();
+
+    void api
+      .streamEvents(
+        "/api/documents/events",
+        (event) => {
+          const docId = event.document_id ? String(event.document_id) : "";
+          if (!docId) {
+            if (event.type === "refresh") void load();
+            return;
+          }
+          setDocs((prev) =>
+            prev.map((d) => {
+              if (d.id !== docId) return d;
+              return {
+                ...d,
+                status: event.status != null ? String(event.status) : d.status,
+                pipeline_step:
+                  event.pipeline_step != null
+                    ? String(event.pipeline_step)
+                    : d.pipeline_step,
+                error_message:
+                  event.error_message != null
+                    ? String(event.error_message)
+                    : event.error != null
+                      ? String(event.error)
+                      : d.error_message,
+              };
+            })
+          );
+        },
+        ac.signal
+      )
+      .catch(() => {
+        /* repli sur le polling 15 s */
+      });
+
+    return () => {
+      ac.abort();
+      clearInterval(poll);
+    };
   }, []);
 
   const filtered = useMemo(() => {
@@ -173,37 +216,43 @@ export default function DocumentsPage() {
   return (
     <DashboardShell title="Documents" breadcrumbs={["Organisation", "Documents"]}>
       <PageHeader
-        description="Uploadez et suivez l’indexation de vos fichiers."
+        description={
+          isSuperAdmin
+            ? "Uploadez et suivez l’indexation des documents de l’organisation."
+            : "Consultation des documents provisionnés par la plateforme (Super Admin)."
+        }
         actions={
-          <div className="flex flex-wrap items-center gap-2">
-            <select
-              className="flex h-9 rounded-md border border-input bg-background px-3 text-sm"
-              value={kbId}
-              onChange={(e) => setKbId(e.target.value)}
-            >
-              <option value="">KB — aucune</option>
-              {kbs.map((kb) => (
-                <option key={kb.id} value={kb.id}>
-                  {kb.name}
-                </option>
-              ))}
-            </select>
-            <input
-              ref={fileRef}
-              type="file"
-              className="hidden"
-              accept=".pdf,.docx,.txt,.xlsx"
-              onChange={onPickFile}
-            />
-            <Button disabled={uploading} onClick={() => fileRef.current?.click()}>
-              {uploading ? (
-                <Loader2 className="size-4 animate-spin" />
-              ) : (
-                <Upload className="size-4" />
-              )}
-              Uploader
-            </Button>
-          </div>
+          isSuperAdmin ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <select
+                className="flex h-9 rounded-md border border-input bg-background px-3 text-sm"
+                value={kbId}
+                onChange={(e) => setKbId(e.target.value)}
+              >
+                <option value="">KB — aucune</option>
+                {kbs.map((kb) => (
+                  <option key={kb.id} value={kb.id}>
+                    {kb.name}
+                  </option>
+                ))}
+              </select>
+              <input
+                ref={fileRef}
+                type="file"
+                className="hidden"
+                accept=".pdf,.docx,.txt,.xlsx,.png,.jpg,.jpeg,.webp"
+                onChange={onPickFile}
+              />
+              <Button disabled={uploading} onClick={() => fileRef.current?.click()}>
+                {uploading ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  <Upload className="size-4" />
+                )}
+                Uploader
+              </Button>
+            </div>
+          ) : undefined
         }
       />
       <TableToolbar
@@ -228,7 +277,14 @@ export default function DocumentsPage() {
           </div>
         ) : filtered.length === 0 ? (
           <div className="p-6">
-            <EmptyState title="Aucun document" description="Uploadez un PDF, DOCX, TXT ou XLSX." />
+            <EmptyState
+              title="Aucun document"
+              description={
+                isSuperAdmin
+                  ? "Uploadez un PDF, DOCX, TXT ou XLSX."
+                  : "Aucun document n’a encore été provisionné pour cette organisation."
+              }
+            />
           </div>
         ) : (
           <Table>
@@ -279,6 +335,9 @@ export default function DocumentsPage() {
                   </TableCell>
                   <TableCell>
                     <Badge variant={statusVariant[d.status] || "outline"}>{d.status}</Badge>
+                    {d.pipeline_step ? (
+                      <div className="mt-1 text-xs text-muted-foreground">{d.pipeline_step}</div>
+                    ) : null}
                   </TableCell>
                   <TableCell className="whitespace-nowrap text-muted-foreground">
                     {d.created_at ? new Date(d.created_at).toLocaleString("fr-FR") : "—"}
@@ -299,18 +358,22 @@ export default function DocumentsPage() {
                           <Eye className="size-4" />
                           Visualiser
                         </DropdownMenuItem>
-                        <DropdownMenuItem onClick={() => openEdit(d)}>
-                          <Pencil className="size-4" />
-                          Modifier
-                        </DropdownMenuItem>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem
-                          className="text-destructive focus:text-destructive"
-                          onClick={() => remove(d.id)}
-                        >
-                          <Trash2 className="size-4" />
-                          Supprimer
-                        </DropdownMenuItem>
+                        {isSuperAdmin ? (
+                          <>
+                            <DropdownMenuItem onClick={() => openEdit(d)}>
+                              <Pencil className="size-4" />
+                              Modifier
+                            </DropdownMenuItem>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem
+                              className="text-destructive focus:text-destructive"
+                              onClick={() => remove(d.id)}
+                            >
+                              <Trash2 className="size-4" />
+                              Supprimer
+                            </DropdownMenuItem>
+                          </>
+                        ) : null}
                       </DropdownMenuContent>
                     </DropdownMenu>
                   </TableCell>

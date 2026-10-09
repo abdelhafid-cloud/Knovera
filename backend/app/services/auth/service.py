@@ -293,6 +293,35 @@ AVATAR_MIME = {
 }
 
 
+def _resolve_user_assets_org(user: User):
+    """Organisation dont le bucket MinIO héberge les assets profil (espace créé, pas MINIO_BUCKET)."""
+    from app.models import Organization
+    from app.services.organizations.service import ensure_super_admin_workspace
+
+    if user.is_super_admin:
+        org, _ = ensure_super_admin_workspace(user)
+        return org
+
+    membership = (
+        db.session.query(OrganizationMember)
+        .filter_by(user_id=user.id, status="active")
+        .order_by(OrganizationMember.created_at.asc())
+        .first()
+    )
+    if membership:
+        return db.session.get(Organization, membership.organization_id)
+    return None
+
+
+def _user_assets_bucket(user: User) -> str:
+    from app.services.storage_provision import ensure_org_minio_bucket
+
+    org = _resolve_user_assets_org(user)
+    if not org:
+        raise ValueError("Aucun espace organisation pour stocker l'avatar")
+    return ensure_org_minio_bucket(org, create=True)
+
+
 def upload_avatar(user: User, file_storage):
     from werkzeug.utils import secure_filename
 
@@ -315,8 +344,8 @@ def upload_avatar(user: User, file_storage):
 
     storage_key = f"avatars/{user.id}/{uuid4().hex}.{ext}"
     client = get_s3_client()
-    bucket = current_app.config["MINIO_BUCKET"]
     try:
+        bucket = _user_assets_bucket(user)
         client.put_object(
             Bucket=bucket,
             Key=storage_key,
@@ -342,8 +371,8 @@ def get_avatar_bytes(user: User):
     if key.startswith("http") or key.startswith("data:"):
         return None, None
     client = get_s3_client()
-    bucket = current_app.config["MINIO_BUCKET"]
     try:
+        bucket = _user_assets_bucket(user)
         obj = client.get_object(Bucket=bucket, Key=key)
         body = obj["Body"].read()
         content_type = obj.get("ContentType") or "application/octet-stream"
@@ -360,7 +389,8 @@ def remove_avatar(user: User):
     if key and not key.startswith("http") and not key.startswith("data:"):
         try:
             client = get_s3_client()
-            client.delete_object(Bucket=current_app.config["MINIO_BUCKET"], Key=key)
+            bucket = _user_assets_bucket(user)
+            client.delete_object(Bucket=bucket, Key=key)
         except Exception:
             current_app.logger.exception("Avatar delete failed")
     user.avatar_url = None

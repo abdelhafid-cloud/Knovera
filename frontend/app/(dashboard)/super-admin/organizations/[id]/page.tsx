@@ -142,16 +142,9 @@ export default function OrganizationDetailPage() {
     }
   };
 
-  const enterOrg = async () => {
-    setBusy(true);
-    try {
-      await switchOrganization(orgId);
-      router.push("/organization");
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Erreur");
-    } finally {
-      setBusy(false);
-    }
+  const enterOrg = () => {
+    void switchOrganization(orgId).catch(() => null);
+    toast.success("Organisation sélectionnée (contexte plateforme)");
   };
 
   const toggleStatus = async () => {
@@ -247,7 +240,7 @@ export default function OrganizationDetailPage() {
             </Button>
             <Button size="sm" onClick={enterOrg} disabled={busy}>
               <ArrowRight className="size-4" />
-              Entrer
+              Sélectionner
             </Button>
             <Button variant="outline" size="sm" onClick={toggleStatus} disabled={busy}>
               {org.status === "active" ? (

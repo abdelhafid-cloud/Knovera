@@ -46,6 +46,74 @@ def _ensure_document_link_columns():
         logging.getLogger(__name__).exception("Could not ensure document link columns")
 
 
+def _ensure_assistant_llm_provider_column():
+    try:
+        db.session.execute(
+            db.text(
+                "ALTER TABLE assistants ADD COLUMN IF NOT EXISTS llm_provider "
+                "VARCHAR(50) NOT NULL DEFAULT 'openai'"
+            )
+        )
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        logging.getLogger(__name__).exception("Could not ensure assistants.llm_provider")
+
+
+def _ensure_assistant_banner_color_column():
+    try:
+        db.session.execute(
+            db.text(
+                "ALTER TABLE assistants ADD COLUMN IF NOT EXISTS banner_color "
+                "VARCHAR(7) NOT NULL DEFAULT '#3B82F6'"
+            )
+        )
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        logging.getLogger(__name__).exception("Could not ensure assistants.banner_color")
+
+
+def _ensure_storage_provision_columns():
+    """Buckets MinIO org + collection Qdrant par KB."""
+    try:
+        db.session.execute(
+            db.text("ALTER TABLE organizations ADD COLUMN IF NOT EXISTS minio_bucket VARCHAR(63)")
+        )
+        db.session.execute(
+            db.text("ALTER TABLE knowledge_bases ADD COLUMN IF NOT EXISTS vector_db_number INTEGER")
+        )
+        db.session.execute(
+            db.text(
+                "ALTER TABLE knowledge_bases ADD COLUMN IF NOT EXISTS qdrant_collection VARCHAR(255)"
+            )
+        )
+        db.session.execute(
+            db.text("ALTER TABLE documents ADD COLUMN IF NOT EXISTS storage_bucket VARCHAR(63)")
+        )
+        db.session.execute(
+            db.text(
+                """
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM pg_constraint WHERE conname = 'uq_kb_org_vector_db_number'
+                    ) THEN
+                        ALTER TABLE knowledge_bases
+                        ADD CONSTRAINT uq_kb_org_vector_db_number
+                        UNIQUE (organization_id, vector_db_number);
+                    END IF;
+                END
+                $$;
+                """
+            )
+        )
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        logging.getLogger(__name__).exception("Could not ensure storage provision columns")
+
+
 def _ensure_refresh_token_columns():
     """Colonnes rotation / audit refresh tokens."""
     try:
@@ -150,9 +218,41 @@ def create_app(config_name=None):
     app.register_blueprint(admin_bp)
 
     with app.app_context():
-        _ensure_org_status_invited()
-        _ensure_document_link_columns()
-        _ensure_refresh_token_columns()
+        # Évite un hang infini si un worker laisse une transaction ouverte
+        try:
+            db.session.execute(db.text("SET lock_timeout = '3s'"))
+            db.session.execute(db.text("SET statement_timeout = '8s'"))
+            _ensure_org_status_invited()
+            _ensure_document_link_columns()
+            _ensure_refresh_token_columns()
+            _ensure_storage_provision_columns()
+            _ensure_assistant_llm_provider_column()
+            _ensure_assistant_banner_color_column()
+            db.create_all()
+            from app.services.organizations.service import get_or_create_system_roles
+
+            get_or_create_system_roles()
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+            logging.getLogger(__name__).exception(
+                "Migrations légères au démarrage ignorées (lock DB ?)"
+            )
+        finally:
+            try:
+                db.session.execute(db.text("RESET lock_timeout"))
+                db.session.execute(db.text("RESET statement_timeout"))
+                db.session.commit()
+            except Exception:
+                db.session.rollback()
+
+        try:
+            from app.services.storage_provision import backfill_org_and_kb_storage
+
+            backfill_org_and_kb_storage()
+        except Exception:
+            db.session.rollback()
+            logging.getLogger(__name__).exception("Backfill storage provision ignoré")
 
     # Callback pipeline → logs dans le terminal BACKEND uniquement (pas dans le worker)
     if os.getenv("RAG_PROCESS", "api") == "api":

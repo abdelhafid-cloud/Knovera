@@ -52,6 +52,7 @@ export type Organization = {
   logo_url?: string | null;
   status: string;
   settings?: Record<string, unknown>;
+  minio_bucket?: string | null;
   is_super_admin_workspace?: boolean;
   created_at?: string | null;
   updated_at?: string | null;
@@ -115,6 +116,7 @@ export type DocumentItem = {
   indexed_at?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
+  pipeline_step?: string | null;
   bucket?: string | null;
   storage_key?: string | null;
   file_name?: string | null;
@@ -134,6 +136,20 @@ export type KnowledgeBase = {
   created_at?: string | null;
   updated_at?: string | null;
   document_count?: number | null;
+  vector_db_number?: number | null;
+  vector_db_label?: string | null;
+  qdrant_collection?: string | null;
+  minio_bucket?: string | null;
+};
+
+export type KbProvisioningPreview = {
+  next_vector_db_number: number;
+  vector_db_label: string;
+  qdrant_collection: string;
+  minio_bucket: string;
+  organization_id: string;
+  organization_name: string;
+  organization_slug: string;
 };
 
 export type Assistant = {
@@ -143,15 +159,27 @@ export type Assistant = {
   name: string;
   description?: string | null;
   avatar_url?: string | null;
+  llm_provider?: string;
   model?: string;
   temperature?: number;
   top_k?: number;
   welcome_message?: string | null;
+  banner_color?: string | null;
   is_active?: boolean;
+  organization_name?: string | null;
+  organization_logo_url?: string | null;
   system_prompt?: string;
   rag_settings?: Record<string, unknown>;
   created_at?: string | null;
   updated_at?: string | null;
+};
+
+export type LlmProviderOption = {
+  id: string;
+  label: string;
+  description?: string;
+  configured: boolean;
+  models: { id: string; label: string }[];
 };
 
 export type MessageSource = {
@@ -183,6 +211,22 @@ export type Conversation = {
   created_at?: string | null;
   updated_at?: string | null;
   messages?: Message[];
+};
+
+export type DocumentChunk = {
+  id: string;
+  document_id?: string;
+  content?: string;
+  page_number?: number | null;
+  chunk_index?: number | null;
+};
+
+export type EvalQuestion = {
+  id: string;
+  knowledge_base_id?: string;
+  question: string;
+  expected_answer?: string | null;
+  created_at?: string | null;
 };
 
 export type LoginResult = {

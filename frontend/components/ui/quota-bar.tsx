@@ -24,7 +24,7 @@ export function QuotaBar({
           className={cn(
             "tabular-nums font-medium",
             item.over && "text-destructive",
-            item.warning && !item.over && "text-amber-600 dark:text-amber-400"
+            item.warning && !item.over && "text-sky-700 dark:text-sky-300"
           )}
         >
           {usedLabel} / {limitLabel}
@@ -37,7 +37,7 @@ export function QuotaBar({
             item.over
               ? "bg-destructive"
               : item.warning
-                ? "bg-amber-500"
+                ? "bg-sky-500"
                 : "bg-primary"
           )}
           style={{ width: `${pct}%` }}

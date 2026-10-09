@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { toast } from "sonner";
 import {
+  Eye,
   Loader2,
   KeyRound,
   MoreHorizontal,
@@ -36,6 +37,7 @@ import {
 } from "@/components/ui/table";
 import { TableToolbar } from "@/components/ui/table-toolbar";
 import { AppModal } from "@/components/ui/app-modal";
+import { UserAvatar } from "@/components/users/user-avatar";
 
 type EditForm = {
   first_name: string;
@@ -97,6 +99,7 @@ export default function UsersPage() {
     assistant_ids: [] as string[],
   });
 
+  const [viewUser, setViewUser] = useState<User | null>(null);
   const [editUser, setEditUser] = useState<User | null>(null);
   const [editForm, setEditForm] = useState<EditForm>({
     first_name: "",
@@ -331,6 +334,7 @@ export default function UsersPage() {
             <TableHeader>
               <TableRow>
                 <TableHead>Utilisateur</TableHead>
+                <TableHead>Email</TableHead>
                 <TableHead>Statut</TableHead>
                 <TableHead>Rôle</TableHead>
                 <TableHead>Créé</TableHead>
@@ -341,8 +345,13 @@ export default function UsersPage() {
               {filtered.map((u) => (
                 <TableRow key={u.id}>
                   <TableCell>
-                    <div className="font-medium">{u.full_name || "—"}</div>
-                    <div className="text-xs text-muted-foreground">{u.email}</div>
+                    <div className="flex items-center gap-3">
+                      <UserAvatar name={u.full_name} email={u.email} avatarUrl={u.avatar_url} />
+                      <div className="min-w-0 font-medium">{u.full_name || "—"}</div>
+                    </div>
+                  </TableCell>
+                  <TableCell className="max-w-[240px] break-all text-sm text-muted-foreground">
+                    {u.email || "—"}
                   </TableCell>
                   <TableCell>
                     <Badge variant={u.is_active ? "success" : "danger"}>
@@ -367,6 +376,10 @@ export default function UsersPage() {
                         </Button>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end">
+                        <DropdownMenuItem onClick={() => setViewUser(u)}>
+                          <Eye className="size-4" />
+                          Afficher
+                        </DropdownMenuItem>
                         <DropdownMenuItem onClick={() => openEdit(u)}>
                           <Pencil className="size-4" />
                           Modifier
@@ -406,11 +419,79 @@ export default function UsersPage() {
         )}
       </div>
 
+      <AppModal open={!!viewUser} onClose={() => setViewUser(null)} labelledBy="view-user-title">
+        {viewUser ? (
+          <div className="space-y-4">
+            <div className="flex items-center gap-3">
+              <UserAvatar
+                name={viewUser.full_name}
+                email={viewUser.email}
+                avatarUrl={viewUser.avatar_url}
+                className="size-12"
+              />
+              <h2 id="view-user-title" className="text-lg font-semibold">
+                Afficher l’utilisateur
+              </h2>
+            </div>
+            <dl className="grid min-w-0 gap-3 text-sm sm:grid-cols-2">
+              <div className="min-w-0">
+                <dt className="text-muted-foreground">Nom</dt>
+                <dd className="break-words font-medium">{viewUser.full_name || "—"}</dd>
+              </div>
+              <div className="min-w-0 sm:col-span-2">
+                <dt className="text-muted-foreground">Email</dt>
+                <dd className="break-all font-medium">{viewUser.email}</dd>
+              </div>
+              <div>
+                <dt className="text-muted-foreground">Statut</dt>
+                <dd>{viewUser.is_active ? "Actif" : "Inactif"}</dd>
+              </div>
+              <div>
+                <dt className="text-muted-foreground">Rôle</dt>
+                <dd>
+                  <RoleCell user={viewUser} />
+                </dd>
+              </div>
+              <div>
+                <dt className="text-muted-foreground">Créé</dt>
+                <dd>
+                  {viewUser.created_at
+                    ? new Date(viewUser.created_at).toLocaleString("fr-FR")
+                    : "—"}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-muted-foreground">Dernière connexion</dt>
+                <dd>
+                  {viewUser.last_login_at
+                    ? new Date(viewUser.last_login_at).toLocaleString("fr-FR")
+                    : "—"}
+                </dd>
+              </div>
+            </dl>
+            <div className="flex justify-end gap-2">
+              <Button type="button" variant="outline" onClick={() => setViewUser(null)}>
+                Fermer
+              </Button>
+              <Button
+                type="button"
+                onClick={() => {
+                  openEdit(viewUser);
+                  setViewUser(null);
+                }}
+              >
+                Modifier
+              </Button>
+            </div>
+          </div>
+        ) : null}
+      </AppModal>
+
       <AppModal open={!!editUser} onClose={() => !saving && setEditUser(null)} labelledBy="edit-user-title">
         <h2 id="edit-user-title" className="text-lg font-semibold">
           Modifier l’utilisateur
         </h2>
-        <p className="mt-1 text-sm text-muted-foreground">{editUser?.email}</p>
+        <p className="mt-1 break-all text-sm text-muted-foreground">{editUser?.email}</p>
         <form onSubmit={saveEdit} className="mt-4 space-y-3">
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-2">
@@ -516,7 +597,7 @@ export default function UsersPage() {
           Créer un utilisateur
         </h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          Admin org = tous les assistants. User = choisir les assistants autorisés.
+          La photo n’est pas demandée ici : l’utilisateur la choisit dans son profil, ou garde l’avatar généré.
         </p>
         <form onSubmit={createUser} className="mt-4 space-y-3">
           <div className="grid grid-cols-2 gap-3">

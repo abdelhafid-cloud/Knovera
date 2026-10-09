@@ -105,6 +105,54 @@ def refresh():
     return response, status
 
 
+@bp.post("/trial")
+@limiter.limit("5 per hour")
+def create_trial():
+    """Onboarding self-service : crée org + admin et connecte."""
+    data = request.get_json(silent=True) or {}
+    org_name = (data.get("org_name") or data.get("organization_name") or "").strip()
+    email = (data.get("email") or "").strip().lower()
+    password = data.get("password") or ""
+    first_name = (data.get("first_name") or "").strip() or "Admin"
+    last_name = (data.get("last_name") or "").strip() or "Org"
+    if not org_name or not email or not password:
+        return api_error("org_name, email et password requis", 400)
+    if len(password) < 8:
+        return api_error("Mot de passe trop court (min 8)", 400)
+
+    from app.extensions import db
+    from app.models import User
+
+    if db.session.query(User).filter_by(email=email).first():
+        return api_error("Un compte existe déjà avec cet email", 400)
+
+    org, meta = org_service.create_organization(
+        name=org_name,
+        admin_email=email,
+        admin_password=password,
+        admin_first_name=first_name,
+        admin_last_name=last_name,
+    )
+    if not meta.get("admin_created"):
+        return api_error("Impossible de créer le compte essai", 500)
+
+    # Activer immédiatement l'org essai
+    org.status = "active"
+    db.session.commit()
+
+    result, err = auth_service.login(email, password)
+    if err:
+        return api_error(err, 400)
+    write_audit(
+        "organization.trial_create",
+        resource_type="organization",
+        resource_id=org.id,
+    )
+    response, status = api_success(_public_auth_payload(result), status=201)
+    _set_refresh_cookie(response, result["refresh_token"])
+    return response, status
+
+
 @bp.get("/me")
 @auth_required
 def me():

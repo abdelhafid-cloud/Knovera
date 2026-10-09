@@ -211,6 +211,8 @@ def platform_analytics():
     if not g.is_super_admin:
         return api_error("Permission insuffisante", 403)
 
+    from app.services.organizations import service as org_service
+
     docs_by_status = {
         row[0]: row[1]
         for row in db.session.query(Document.status, db.func.count(Document.id))
@@ -228,17 +230,23 @@ def platform_analytics():
     )
     org_rows = []
     for org in orgs:
+        settings = org.settings or {}
         org_rows.append(
             {
                 "id": str(org.id),
                 "name": org.name,
                 "slug": org.slug,
                 "status": org.status,
+                "logo_url": org_service.resolve_logo_url(org),
+                "is_super_admin_workspace": bool(settings.get("is_super_admin_workspace")),
                 "members": db.session.query(OrganizationMember)
                 .filter_by(organization_id=org.id, status="active")
                 .count(),
                 "documents": db.session.query(Document)
                 .filter(Document.organization_id == org.id, Document.status != "deleted")
+                .count(),
+                "knowledge_bases": db.session.query(KnowledgeBase)
+                .filter_by(organization_id=org.id)
                 .count(),
                 "assistants": db.session.query(Assistant)
                 .filter_by(organization_id=org.id)
@@ -385,6 +393,31 @@ def platform_knowledge_bases():
     return api_success(result)
 
 
+@bp.get("/admin/knowledge-bases/provisioning-preview")
+@auth_required
+def platform_kb_provisioning_preview():
+    if not g.is_super_admin:
+        return api_error("Permission insuffisante", 403)
+    from app.services.organizations import service as org_service
+    from app.services.storage_provision import ensure_org_minio_bucket, provisioning_preview
+
+    workspace, _ = org_service.ensure_super_admin_workspace(g.current_user)
+    org = workspace
+    org_raw = (request.args.get("organization_id") or "").strip()
+    if org_raw:
+        try:
+            oid = parse_uuid(org_raw, "organization_id")
+        except ValueError as e:
+            return api_error(str(e), 400)
+        target = db.session.get(Organization, oid)
+        if not target or target.status == "deleted":
+            return api_error("Organisation introuvable", 404)
+        org = target
+    ensure_org_minio_bucket(org, create=True)
+    db.session.commit()
+    return api_success(provisioning_preview(org))
+
+
 @bp.post("/admin/knowledge-bases")
 @auth_required
 def create_platform_knowledge_base():
@@ -394,6 +427,7 @@ def create_platform_knowledge_base():
     from app.services.documents import service as doc_service
     from app.services.organizations import quotas as quota_service
     from app.services.organizations import service as org_service
+    from app.services.storage_provision import provision_knowledge_base
 
     data = request.get_json(silent=True) or {}
     name = (data.get("name") or "").strip()
@@ -419,19 +453,67 @@ def create_platform_knowledge_base():
     if not ok:
         return api_error(err, 400)
 
-    kb = KnowledgeBase(
-        organization_id=org.id,
+    kb = provision_knowledge_base(
+        org,
         name=name,
         description=data.get("description"),
-        rag_settings=data.get("rag_settings") or {"chunk_size": 800, "overlap": 120, "top_k": 5},
         created_by=g.current_user.id,
+        rag_settings=data.get("rag_settings") or {"chunk_size": 800, "overlap": 120, "top_k": 5},
     )
-    db.session.add(kb)
     db.session.commit()
     write_audit("knowledge_base.create", resource_type="knowledge_base", resource_id=kb.id)
     item = doc_service.kb_to_dict(kb)
     item["organization_name"] = org.name
     return api_success(item, status=201)
+
+
+@bp.get("/admin/knowledge-bases/<kb_id>")
+@auth_required
+def get_platform_knowledge_base(kb_id):
+    if not g.is_super_admin:
+        return api_error("Permission insuffisante", 403)
+    from app.services.documents import service as doc_service
+
+    try:
+        kid = parse_uuid(kb_id)
+    except ValueError as e:
+        return api_error(str(e), 400)
+    kb = db.session.get(KnowledgeBase, kid)
+    if not kb:
+        return api_error("Knowledge base introuvable", 404)
+    item = doc_service.kb_to_dict(kb)
+    org = db.session.get(Organization, kb.organization_id)
+    item["organization_name"] = org.name if org else None
+    return api_success(item)
+
+
+@bp.patch("/admin/knowledge-bases/<kb_id>")
+@auth_required
+def update_platform_knowledge_base(kb_id):
+    if not g.is_super_admin:
+        return api_error("Permission insuffisante", 403)
+    from app.services.documents import service as doc_service
+
+    try:
+        kid = parse_uuid(kb_id)
+    except ValueError as e:
+        return api_error(str(e), 400)
+    kb = db.session.get(KnowledgeBase, kid)
+    if not kb:
+        return api_error("Knowledge base introuvable", 404)
+    data = request.get_json(silent=True) or {}
+    if "name" in data and data["name"]:
+        kb.name = str(data["name"]).strip()
+    if "description" in data:
+        kb.description = data["description"]
+    if "rag_settings" in data and isinstance(data["rag_settings"], dict):
+        kb.rag_settings = {**(kb.rag_settings or {}), **data["rag_settings"]}
+    db.session.commit()
+    write_audit("knowledge_base.update", resource_type="knowledge_base", resource_id=kid)
+    item = doc_service.kb_to_dict(kb)
+    org = db.session.get(Organization, kb.organization_id)
+    item["organization_name"] = org.name if org else None
+    return api_success(item)
 
 
 @bp.delete("/admin/knowledge-bases/<kb_id>")
@@ -630,6 +712,10 @@ def download_platform_document(doc_id):
             "text/plain": ".txt",
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+            "image/png": ".png",
+            "image/jpeg": ".jpg",
+            "image/webp": ".webp",
+            "image/tiff": ".tiff",
         }.get(doc.mime_type)
         if ext:
             filename = f"{filename}{ext}"
@@ -730,18 +816,40 @@ def create_platform_assistant():
     if not ok:
         return api_error(err, 400)
 
+    from app.services.rag.llm_providers import default_model_for
+    from app.services.platform_settings import default_llm_settings, default_rag_settings
+
+    llm_defaults = default_llm_settings()
+    rag_defaults = default_rag_settings()
+    provider = (data.get("llm_provider") or llm_defaults.get("provider") or "openai").strip().lower()
+    if provider not in ("openai", "anthropic", "openrouter"):
+        return api_error("llm_provider invalide", 400)
+    model = (data.get("model") or "").strip() or llm_defaults.get("model") or default_model_for(provider)
+    system_prompt = (data.get("system_prompt") or "").strip() or (
+        f"Tu es « {name} », un assistant utile basé sur la knowledge base « {kb.name} »."
+    )
+    try:
+        temperature = float(data["temperature"]) if "temperature" in data else float(llm_defaults.get("temperature", 0.2))
+    except (TypeError, ValueError):
+        temperature = 0.2
+    try:
+        top_k = int(data["top_k"]) if "top_k" in data else int(rag_defaults.get("top_k", 5))
+    except (TypeError, ValueError):
+        top_k = 5
+
     assistant = Assistant(
         organization_id=org.id,
         knowledge_base_id=kid,
         name=name,
         description=data.get("description"),
         avatar_url=data.get("avatar_url"),
-        system_prompt=data.get("system_prompt")
-        or "Tu es un assistant utile basé sur les documents de l'organisation.",
-        model=data.get("model") or "gpt-4o-mini",
-        temperature=float(data.get("temperature", 0.2)),
-        top_k=int(data.get("top_k", 5)),
+        system_prompt=system_prompt,
+        llm_provider=provider,
+        model=model,
+        temperature=temperature,
+        top_k=top_k,
         welcome_message=data.get("welcome_message") or "Bonjour, comment puis-je vous aider ?",
+        banner_color=chat_service.normalize_banner_color(data.get("banner_color")),
         is_active=bool(data.get("is_active", True)),
         rag_settings=data.get("rag_settings") or {},
         created_by=g.current_user.id,
@@ -752,6 +860,104 @@ def create_platform_assistant():
     item = chat_service.assistant_to_dict(assistant, include_prompt=True)
     item["organization_name"] = org.name
     return api_success(item, status=201)
+
+
+@bp.get("/admin/assistants/<assistant_id>")
+@auth_required
+def get_platform_assistant(assistant_id):
+    if not g.is_super_admin:
+        return api_error("Permission insuffisante", 403)
+    from app.services.chat import service as chat_service
+
+    try:
+        aid = parse_uuid(assistant_id)
+    except ValueError as e:
+        return api_error(str(e), 400)
+    assistant = db.session.get(Assistant, aid)
+    if not assistant:
+        return api_error("Assistant introuvable", 404)
+    item = chat_service.assistant_to_dict(assistant, include_prompt=True)
+    org = db.session.get(Organization, assistant.organization_id)
+    item["organization_name"] = org.name if org else None
+    return api_success(item)
+
+
+@bp.patch("/admin/assistants/<assistant_id>")
+@auth_required
+def update_platform_assistant(assistant_id):
+    if not g.is_super_admin:
+        return api_error("Permission insuffisante", 403)
+    from app.services.chat import service as chat_service
+
+    try:
+        aid = parse_uuid(assistant_id)
+    except ValueError as e:
+        return api_error(str(e), 400)
+    assistant = db.session.get(Assistant, aid)
+    if not assistant:
+        return api_error("Assistant introuvable", 404)
+
+    data = request.get_json(silent=True) or {}
+    for field in (
+        "name",
+        "description",
+        "avatar_url",
+        "system_prompt",
+        "model",
+        "welcome_message",
+        "banner_color",
+    ):
+        if field in data:
+            setattr(assistant, field, data[field])
+    if "banner_color" in data:
+        assistant.banner_color = chat_service.normalize_banner_color(data.get("banner_color"))
+    if "llm_provider" in data:
+        provider = (data.get("llm_provider") or "").strip().lower()
+        if provider not in ("openai", "anthropic", "openrouter"):
+            return api_error("llm_provider invalide", 400)
+        assistant.llm_provider = provider
+    if "temperature" in data:
+        assistant.temperature = float(data["temperature"])
+    if "top_k" in data:
+        assistant.top_k = int(data["top_k"])
+    if "is_active" in data:
+        assistant.is_active = bool(data["is_active"])
+    if "knowledge_base_id" in data:
+        try:
+            kid = parse_uuid(data["knowledge_base_id"], "knowledge_base_id")
+        except ValueError as e:
+            return api_error(str(e), 400)
+        kb = db.session.get(KnowledgeBase, kid)
+        if not kb or kb.organization_id != assistant.organization_id:
+            return api_error("Knowledge base introuvable dans cette organisation", 400)
+        assistant.knowledge_base_id = kid
+    if "rag_settings" in data and isinstance(data["rag_settings"], dict):
+        assistant.rag_settings = {**(assistant.rag_settings or {}), **data["rag_settings"]}
+
+    db.session.commit()
+    write_audit("assistant.update", resource_type="assistant", resource_id=aid)
+    item = chat_service.assistant_to_dict(assistant, include_prompt=True)
+    org = db.session.get(Organization, assistant.organization_id)
+    item["organization_name"] = org.name if org else None
+    return api_success(item)
+
+
+@bp.delete("/admin/assistants/<assistant_id>")
+@auth_required
+def delete_platform_assistant(assistant_id):
+    if not g.is_super_admin:
+        return api_error("Permission insuffisante", 403)
+    try:
+        aid = parse_uuid(assistant_id)
+    except ValueError as e:
+        return api_error(str(e), 400)
+    assistant = db.session.get(Assistant, aid)
+    if not assistant:
+        return api_error("Assistant introuvable", 404)
+    db.session.delete(assistant)
+    db.session.commit()
+    write_audit("assistant.delete", resource_type="assistant", resource_id=aid)
+    return api_success({"ok": True})
 
 
 @bp.get("/admin/conversations")
@@ -773,29 +979,94 @@ def platform_conversations():
     return api_success(result)
 
 
+@bp.get("/admin/conversations/<conversation_id>")
+@auth_required
+def get_platform_conversation(conversation_id):
+    if not g.is_super_admin:
+        return api_error("Permission insuffisante", 403)
+    from app.services.chat import service as chat_service
+
+    try:
+        cid = parse_uuid(conversation_id)
+    except ValueError as e:
+        return api_error(str(e), 400)
+    conversation = db.session.get(Conversation, cid)
+    if not conversation:
+        return api_error("Conversation introuvable", 404)
+    item = chat_service.conversation_to_dict(conversation, include_messages=True)
+    org = db.session.get(Organization, conversation.organization_id)
+    item["organization_name"] = org.name if org else None
+    return api_success(item)
+
+
+@bp.patch("/admin/conversations/<conversation_id>")
+@auth_required
+def update_platform_conversation(conversation_id):
+    if not g.is_super_admin:
+        return api_error("Permission insuffisante", 403)
+    from app.services.chat import service as chat_service
+
+    try:
+        cid = parse_uuid(conversation_id)
+    except ValueError as e:
+        return api_error(str(e), 400)
+    conversation = db.session.get(Conversation, cid)
+    if not conversation:
+        return api_error("Conversation introuvable", 404)
+    data = request.get_json(silent=True) or {}
+    if "title" in data:
+        title = (data.get("title") or "").strip()
+        conversation.title = title or conversation.title
+    db.session.commit()
+    write_audit("conversation.update", resource_type="conversation", resource_id=cid)
+    item = chat_service.conversation_to_dict(conversation)
+    org = db.session.get(Organization, conversation.organization_id)
+    item["organization_name"] = org.name if org else None
+    return api_success(item)
+
+
+@bp.delete("/admin/conversations/<conversation_id>")
+@auth_required
+def delete_platform_conversation(conversation_id):
+    if not g.is_super_admin:
+        return api_error("Permission insuffisante", 403)
+    try:
+        cid = parse_uuid(conversation_id)
+    except ValueError as e:
+        return api_error(str(e), 400)
+    conversation = db.session.get(Conversation, cid)
+    if not conversation:
+        return api_error("Conversation introuvable", 404)
+    db.session.delete(conversation)
+    db.session.commit()
+    write_audit("conversation.delete", resource_type="conversation", resource_id=cid)
+    return api_success({"ok": True})
+
+
 @bp.get("/admin/settings")
 @auth_required
 def platform_settings():
     if not g.is_super_admin:
         return api_error("Permission insuffisante", 403)
-    from flask import current_app
+    from app.services.platform_settings import get_platform_settings
 
-    return api_success(
-        {
-            "app_name": current_app.config.get("APP_NAME"),
-            "frontend_url": current_app.config.get("FRONTEND_URL"),
-            "max_upload_size_mb": current_app.config.get("MAX_UPLOAD_SIZE_MB"),
-            "allowed_extensions": sorted(current_app.config.get("ALLOWED_EXTENSIONS") or []),
-            "cohere_embed_model": current_app.config.get("COHERE_EMBED_MODEL"),
-            "llm_model": current_app.config.get("LLM_MODEL"),
-            "qdrant_collection": current_app.config.get("QDRANT_COLLECTION"),
-            "jwt_access_minutes": int(
-                current_app.config.get("JWT_ACCESS_TOKEN_EXPIRES").total_seconds() / 60
-            )
-            if current_app.config.get("JWT_ACCESS_TOKEN_EXPIRES")
-            else None,
-        }
-    )
+    return api_success(get_platform_settings())
+
+
+@bp.patch("/admin/settings")
+@auth_required
+def update_platform_settings():
+    if not g.is_super_admin:
+        return api_error("Permission insuffisante", 403)
+    from app.services.platform_settings import update_platform_settings as save_settings
+
+    data = request.get_json(silent=True) or {}
+    try:
+        settings = save_settings(data)
+    except ValueError as e:
+        return api_error(str(e), 400)
+    write_audit("platform.settings.update", resource_type="platform", resource_id="config")
+    return api_success(settings)
 
 
 @bp.get("/admin/audit-logs")
@@ -803,27 +1074,62 @@ def platform_settings():
 def audit_logs():
     if not g.is_super_admin:
         return api_error("Permission insuffisante", 403)
+    from datetime import datetime, timezone
+
     page = max(int(request.args.get("page", 1)), 1)
     per_page = min(int(request.args.get("per_page", 50)), 100)
-    q = db.session.query(AuditLog).order_by(AuditLog.created_at.desc())
-    total = q.count()
-    logs = q.offset((page - 1) * per_page).limit(per_page).all()
-    return api_success(
-        [
+    base = db.session.query(AuditLog)
+    total = base.count()
+    rows = (
+        db.session.query(AuditLog, User, Organization)
+        .outerjoin(User, User.id == AuditLog.actor_user_id)
+        .outerjoin(Organization, Organization.id == AuditLog.organization_id)
+        .order_by(AuditLog.created_at.desc())
+        .offset((page - 1) * per_page)
+        .limit(per_page)
+        .all()
+    )
+    start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    today = base.filter(AuditLog.created_at >= start).count()
+    logins = base.filter(AuditLog.action == "auth.login").count()
+    actors = (
+        db.session.query(db.func.count(db.func.distinct(AuditLog.actor_user_id)))
+        .filter(AuditLog.actor_user_id.isnot(None))
+        .scalar()
+        or 0
+    )
+    payload = []
+    for log, actor, org in rows:
+        name = actor.full_name if actor else ""
+        payload.append(
             {
-                "id": str(l.id),
-                "actor_user_id": str(l.actor_user_id) if l.actor_user_id else None,
-                "organization_id": str(l.organization_id) if l.organization_id else None,
-                "action": l.action,
-                "resource_type": l.resource_type,
-                "resource_id": l.resource_id,
-                "ip_address": l.ip_address,
-                "metadata": l.meta,
-                "created_at": l.created_at.isoformat() if l.created_at else None,
+                "id": str(log.id),
+                "actor_user_id": str(log.actor_user_id) if log.actor_user_id else None,
+                "actor_name": name or None,
+                "actor_email": actor.email if actor else None,
+                "organization_id": str(log.organization_id) if log.organization_id else None,
+                "organization_name": org.name if org else None,
+                "action": log.action,
+                "resource_type": log.resource_type,
+                "resource_id": log.resource_id,
+                "ip_address": log.ip_address,
+                "metadata": log.meta,
+                "created_at": log.created_at.isoformat() if log.created_at else None,
             }
-            for l in logs
-        ],
-        meta={"page": page, "per_page": per_page, "total": total},
+        )
+    return api_success(
+        payload,
+        meta={
+            "page": page,
+            "per_page": per_page,
+            "total": total,
+            "summary": {
+                "total": total,
+                "today": today,
+                "logins": logins,
+                "actors": actors,
+            },
+        },
     )
 
 
@@ -1033,6 +1339,20 @@ def organization_dashboard():
     from app.services.organizations import quotas as quota_service
 
     usage_data = quota_service.usage_vs_quotas(g.organization)
+    recent_assistants = (
+        db.session.query(Assistant)
+        .filter_by(organization_id=oid)
+        .order_by(Assistant.created_at.desc())
+        .limit(6)
+        .all()
+    )
+    recent_docs = (
+        db.session.query(Document)
+        .filter(Document.organization_id == oid, Document.status != "deleted")
+        .order_by(Document.created_at.desc())
+        .limit(5)
+        .all()
+    )
     return api_success(
         {
             "total_members": usage_data["usage"]["members"],
@@ -1054,5 +1374,23 @@ def organization_dashboard():
             "quotas": usage_data["quotas"],
             "usage": usage_data["usage"],
             "quota_items": usage_data["items"],
+            "recent_assistants": [
+                {
+                    "id": str(a.id),
+                    "name": a.name,
+                    "is_active": a.is_active,
+                    "llm_provider": a.llm_provider,
+                }
+                for a in recent_assistants
+            ],
+            "recent_documents": [
+                {
+                    "id": str(d.id),
+                    "name": d.name,
+                    "status": d.status,
+                    "created_at": d.created_at.isoformat() if d.created_at else None,
+                }
+                for d in recent_docs
+            ],
         }
     )

@@ -148,16 +148,11 @@ export function OrganizationFicheDrawer({ open, organizationId, onClose, onChang
     }
   };
 
-  const enterOrg = async () => {
+  const enterOrg = () => {
     if (!organizationId) return;
-    setBusy(true);
-    try {
-      await switchOrganization(organizationId);
-      router.push("/organization");
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Erreur");
-      setBusy(false);
-    }
+    void switchOrganization(organizationId).catch(() => null);
+    // Super-admin: rester sur la fiche plateforme (sidebar inchangée)
+    router.push(`/super-admin/organizations/${organizationId}`);
   };
 
   const toggleStatus = async () => {
@@ -252,7 +247,7 @@ export function OrganizationFicheDrawer({ open, organizationId, onClose, onChang
               <div className="flex flex-wrap gap-2">
                 <Button size="sm" onClick={enterOrg} disabled={busy}>
                   <ArrowRight className="size-4" />
-                  Entrer
+                  Page complète
                 </Button>
                 <Button variant="outline" size="sm" onClick={toggleStatus} disabled={busy}>
                   {org.status === "active" ? (

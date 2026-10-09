@@ -11,7 +11,15 @@ from app import create_app
 from app.extensions import db
 from app.models import Document, KnowledgeBase
 from app.services.documents import service as doc_service
-from app.services.rag.pipeline import process_document
+
+# Indexation via dossier pipeline/ (séparé)
+import sys
+from pathlib import Path
+
+_ROOT = Path(__file__).resolve().parents[2]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+from pipeline.app.process import process_document
 
 ORG_ID = UUID("d5fcd06f-0f6c-4093-97bb-0742c9ec9e08")
 KB_ID = UUID("3f331b83-d761-4300-8191-e3dc0a72120f")

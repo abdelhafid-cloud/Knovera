@@ -18,6 +18,12 @@ MIME_MAP = {
     "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "txt": "text/plain",
     "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "png": "image/png",
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "webp": "image/webp",
+    "tif": "image/tiff",
+    "tiff": "image/tiff",
 }
 
 
@@ -51,7 +57,9 @@ def document_to_dict(doc: Document, *, include_storage: bool = False, include_mi
         "updated_at": doc.updated_at.isoformat() if doc.updated_at else None,
     }
     if include_storage or include_minio_url:
-        bucket = current_app.config["MINIO_BUCKET"]
+        from app.services.storage_provision import resolve_document_bucket
+
+        bucket = resolve_document_bucket(doc)
         key = doc.storage_key or ""
         data["bucket"] = bucket
         data["storage_key"] = key
@@ -68,11 +76,13 @@ def document_to_dict(doc: Document, *, include_storage: bool = False, include_mi
 def generate_presigned_url(doc: Document, expires_in: int = 3600) -> str | None:
     if not doc.storage_key:
         return None
+    from app.services.storage_provision import resolve_document_bucket
+
     client = get_s3_client()
     return client.generate_presigned_url(
         "get_object",
         Params={
-            "Bucket": current_app.config["MINIO_BUCKET"],
+            "Bucket": resolve_document_bucket(doc),
             "Key": doc.storage_key,
             "ResponseContentDisposition": f'inline; filename="{doc.name}"',
             "ResponseContentType": doc.mime_type or "application/octet-stream",
@@ -82,6 +92,15 @@ def generate_presigned_url(doc: Document, expires_in: int = 3600) -> str | None:
 
 
 def kb_to_dict(kb: KnowledgeBase):
+    org = getattr(kb, "organization", None)
+    minio_bucket = None
+    if org is not None:
+        minio_bucket = org.minio_bucket
+    else:
+        from app.models import Organization
+
+        org_row = db.session.get(Organization, kb.organization_id)
+        minio_bucket = org_row.minio_bucket if org_row else None
     return {
         "id": str(kb.id),
         "organization_id": str(kb.organization_id),
@@ -92,6 +111,10 @@ def kb_to_dict(kb: KnowledgeBase):
         "created_at": kb.created_at.isoformat() if kb.created_at else None,
         "updated_at": kb.updated_at.isoformat() if kb.updated_at else None,
         "document_count": len(kb.documents) if kb.documents is not None else None,
+        "vector_db_number": kb.vector_db_number,
+        "vector_db_label": f"Collection #{kb.vector_db_number}" if kb.vector_db_number else None,
+        "qdrant_collection": kb.qdrant_collection,
+        "minio_bucket": minio_bucket,
     }
 
 
@@ -108,22 +131,28 @@ def validate_upload(filename: str, size: int):
     return True, ext
 
 
-def upload_document(
+def ingest_document_bytes(
     organization_id: UUID,
     knowledge_base_id: UUID | None,
-    user_id: UUID,
-    file_storage,
+    user_id: UUID | None,
     *,
+    filename: str,
+    data: bytes,
+    mime_type: str | None = None,
     display_name: str | None = None,
     cloud_url: str | None = None,
     source_url: str | None = None,
+    skip_if_source_exists: bool = True,
 ):
+    """Ingère des octets (upload UI ou sync connecteur) → MinIO + pipeline."""
+    import time
+
+    from app.logging_config import ms_since
     from app.models import Organization
     from app.services.organizations import quotas as quota_service
 
-    filename = secure_filename(file_storage.filename or "document")
-    data = file_storage.read()
-    ok, ext_or_err = validate_upload(filename, len(data))
+    safe_name = secure_filename(filename or "document") or "document"
+    ok, ext_or_err = validate_upload(safe_name, len(data))
     if not ok:
         return None, ext_or_err
     ext = ext_or_err
@@ -133,6 +162,20 @@ def upload_document(
         return None, "Organisation introuvable"
     if org.status == "suspended":
         return None, "Organisation suspendue"
+
+    source = (source_url or "").strip() or None
+    if skip_if_source_exists and source:
+        existing = (
+            db.session.query(Document)
+            .filter(
+                Document.organization_id == organization_id,
+                Document.source_url == source,
+                Document.status != "deleted",
+            )
+            .first()
+        )
+        if existing:
+            return existing, "already_exists"
 
     ok_docs, err_docs = quota_service.check_quota(org, "documents", 1)
     if not ok_docs:
@@ -148,16 +191,14 @@ def upload_document(
 
     checksum = hashlib.sha256(data).hexdigest()
     doc_id = uuid4()
-    storage_key = f"{organization_id}/{doc_id}/{filename}"
+    storage_key = f"{organization_id}/{doc_id}/{safe_name}"
+
+    from app.services.storage_provision import ensure_org_minio_bucket
 
     client = get_s3_client()
-    bucket = current_app.config["MINIO_BUCKET"]
-    name = (display_name or "").strip() or filename
-    name = name[:500]
-    mime = MIME_MAP.get(ext, file_storage.mimetype or "application/octet-stream")
-    import time
-
-    from app.logging_config import ms_since
+    bucket = ensure_org_minio_bucket(org, create=True)
+    name = ((display_name or "").strip() or safe_name)[:500]
+    mime = MIME_MAP.get(ext, mime_type or "application/octet-stream")
 
     t_upload = time.perf_counter()
     logger.info(
@@ -187,13 +228,10 @@ def upload_document(
             ms_since(t0),
         )
     except Exception as exc:
-        logger.exception(
-            "[BACKEND:UPLOAD] MinIO failed | doc=%s | id=%s", name, doc_id
-        )
+        logger.exception("[BACKEND:UPLOAD] MinIO failed | doc=%s | id=%s", name, doc_id)
         return None, f"Erreur stockage: {exc}"
 
     cloud = (cloud_url or "").strip() or None
-    source = (source_url or "").strip() or None
     if cloud and len(cloud) > 2000:
         return None, "Lien cloud trop long"
     if source and len(source) > 2000:
@@ -208,6 +246,7 @@ def upload_document(
         mime_type=mime,
         size_bytes=len(data),
         storage_key=storage_key,
+        storage_bucket=bucket,
         checksum_sha256=checksum,
         cloud_url=cloud,
         source_url=source,
@@ -215,12 +254,6 @@ def upload_document(
     )
     db.session.add(doc)
     db.session.commit()
-    logger.info(
-        "[BACKEND:UPLOAD] DB pending | doc=%s | id=%s | status=pending | took=%sms → enqueue…",
-        doc.name,
-        doc.id,
-        ms_since(t_upload),
-    )
 
     try:
         from app.workers.document_processor import enqueue_document_processing
@@ -234,7 +267,7 @@ def upload_document(
         return None, str(exc)
 
     logger.info(
-        "[BACKEND:UPLOAD] DONE | doc=%s | id=%s | total=%sms | en attente callback pipeline",
+        "[BACKEND:UPLOAD] DONE | doc=%s | id=%s | total=%sms",
         doc.name,
         doc.id,
         ms_since(t_upload),
@@ -242,15 +275,43 @@ def upload_document(
     return doc, None
 
 
+def upload_document(
+    organization_id: UUID,
+    knowledge_base_id: UUID | None,
+    user_id: UUID,
+    file_storage,
+    *,
+    display_name: str | None = None,
+    cloud_url: str | None = None,
+    source_url: str | None = None,
+):
+    filename = secure_filename(file_storage.filename or "document")
+    data = file_storage.read()
+    return ingest_document_bytes(
+        organization_id,
+        knowledge_base_id,
+        user_id,
+        filename=filename,
+        data=data,
+        mime_type=file_storage.mimetype,
+        display_name=display_name,
+        cloud_url=cloud_url,
+        source_url=source_url,
+        skip_if_source_exists=False,
+    )
+
+
 def download_document_bytes(doc: Document) -> bytes:
     import time
 
     from app.logging_config import get_doc_logger, ms_since
 
+    from app.services.storage_provision import resolve_document_bucket
+
     log = get_doc_logger(__name__)
     t0 = time.perf_counter()
     client = get_s3_client()
-    bucket = current_app.config["MINIO_BUCKET"]
+    bucket = resolve_document_bucket(doc)
     log.info(
         "[PIPELINE:DOWNLOAD] MinIO get_object | bucket=%s | key=%s",
         bucket,
@@ -299,7 +360,11 @@ def soft_delete_document(doc: Document):
     try:
         from app.services.rag.vectorstore import QdrantVectorStore
 
-        store = QdrantVectorStore()
+        collection = None
+        if doc.knowledge_base_id:
+            kb = db.session.get(KnowledgeBase, doc.knowledge_base_id)
+            collection = kb.qdrant_collection if kb else None
+        store = QdrantVectorStore(collection_name=collection)
         store.delete_by_document(str(doc.organization_id), str(doc.id))
     except Exception:
         logger.exception("Failed to purge Qdrant points for document %s", doc.id)
@@ -322,6 +387,7 @@ def delete_knowledge_base(kb: KnowledgeBase) -> dict:
 
     org_id = kb.organization_id
     kb_id = kb.id
+    collection = kb.qdrant_collection
 
     docs = (
         db.session.query(Document)
@@ -335,7 +401,7 @@ def delete_knowledge_base(kb: KnowledgeBase) -> dict:
 
     # Also mark already-orphaned linked docs (status deleted) chunks cleanup is optional
     try:
-        store = QdrantVectorStore()
+        store = QdrantVectorStore(collection_name=collection)
         store.delete_by_knowledge_base(str(org_id), str(kb_id))
     except Exception:
         logger.exception("Failed to purge Qdrant points for knowledge base %s", kb_id)

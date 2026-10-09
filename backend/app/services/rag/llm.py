@@ -247,20 +247,33 @@ def compose_system_prompt(assistant_system: str | None = None) -> str:
 
 
 class LLMProvider(ABC):
+    model: str = ""
+
     @abstractmethod
     def generate(self, system_prompt: str, user_prompt: str, temperature: float = 0.2) -> str:
         raise NotImplementedError
 
+    def stream(self, system_prompt: str, user_prompt: str, temperature: float = 0.2):
+        """Yield text chunks. Default: one-shot generate."""
+        yield self.generate(system_prompt, user_prompt, temperature=temperature)
+
 
 class OpenAICompatibleLLM(LLMProvider):
-    def __init__(self):
+    def __init__(
+        self,
+        *,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        model: str | None = None,
+    ):
         from openai import OpenAI
 
-        api_key = current_app.config["LLM_API_KEY"]
-        if not api_key:
-            raise RuntimeError("LLM_API_KEY manquante")
-        self.client = OpenAI(api_key=api_key, base_url=current_app.config["LLM_BASE_URL"])
-        self.model = current_app.config["LLM_MODEL"]
+        key = (api_key or current_app.config.get("LLM_API_KEY") or "").strip()
+        if not key:
+            raise RuntimeError("Clé API LLM manquante pour ce provider")
+        url = (base_url or current_app.config.get("LLM_BASE_URL") or "https://api.openai.com/v1").strip()
+        self.client = OpenAI(api_key=key, base_url=url)
+        self.model = (model or current_app.config.get("LLM_MODEL") or "gpt-4o-mini").strip()
 
     def generate(self, system_prompt: str, user_prompt: str, temperature: float = 0.2) -> str:
         response = self.client.chat.completions.create(
@@ -273,9 +286,215 @@ class OpenAICompatibleLLM(LLMProvider):
         )
         return response.choices[0].message.content or ""
 
+    def stream(self, system_prompt: str, user_prompt: str, temperature: float = 0.2):
+        stream = self.client.chat.completions.create(
+            model=self.model,
+            temperature=temperature,
+            stream=True,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        )
+        for event in stream:
+            try:
+                delta = event.choices[0].delta.content or ""
+            except Exception:
+                delta = ""
+            if delta:
+                yield delta
 
-def get_llm_provider() -> LLMProvider:
-    return OpenAICompatibleLLM()
+
+class AnthropicLLM(LLMProvider):
+    def __init__(
+        self,
+        *,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        model: str | None = None,
+    ):
+        import json
+        import urllib.error
+        import urllib.request
+
+        self._json = json
+        self._urllib_request = urllib.request
+        self._urllib_error = urllib.error
+        self.api_key = (api_key or "").strip()
+        if not self.api_key:
+            raise RuntimeError("ANTHROPIC_API_KEY manquante")
+        self.base_url = (base_url or "https://api.anthropic.com").rstrip("/")
+        self.model = (model or "claude-sonnet-4-5").strip()
+
+    def generate(self, system_prompt: str, user_prompt: str, temperature: float = 0.2) -> str:
+        body = self._json.dumps(
+            {
+                "model": self.model,
+                "max_tokens": 4096,
+                "temperature": float(temperature or 0.2),
+                "system": system_prompt or "",
+                "messages": [{"role": "user", "content": user_prompt or ""}],
+            }
+        ).encode("utf-8")
+        req = self._urllib_request.Request(
+            f"{self.base_url}/v1/messages",
+            data=body,
+            headers={
+                "x-api-key": self.api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with self._urllib_request.urlopen(req, timeout=120) as resp:
+                payload = self._json.loads(resp.read().decode("utf-8"))
+        except self._urllib_error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="ignore")[:400]
+            raise RuntimeError(f"Anthropic HTTP {exc.code}: {detail}") from exc
+        parts = []
+        for block in payload.get("content") or []:
+            if isinstance(block, dict) and block.get("type") == "text":
+                parts.append(block.get("text") or "")
+        return "\n".join(parts).strip()
+
+    def stream(self, system_prompt: str, user_prompt: str, temperature: float = 0.2):
+        """SSE Anthropic — yield text deltas."""
+        body = self._json.dumps(
+            {
+                "model": self.model,
+                "max_tokens": 4096,
+                "temperature": float(temperature or 0.2),
+                "system": system_prompt or "",
+                "messages": [{"role": "user", "content": user_prompt or ""}],
+                "stream": True,
+            }
+        ).encode("utf-8")
+        req = self._urllib_request.Request(
+            f"{self.base_url}/v1/messages",
+            data=body,
+            headers={
+                "x-api-key": self.api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+                "accept": "text/event-stream",
+            },
+            method="POST",
+        )
+        try:
+            with self._urllib_request.urlopen(req, timeout=180) as resp:
+                buffer = ""
+                while True:
+                    chunk = resp.read(256)
+                    if not chunk:
+                        break
+                    buffer += chunk.decode("utf-8", errors="ignore")
+                    while "\n" in buffer:
+                        line, buffer = buffer.split("\n", 1)
+                        line = line.strip()
+                        if not line.startswith("data:"):
+                            continue
+                        raw = line[5:].strip()
+                        if not raw or raw == "[DONE]":
+                            continue
+                        try:
+                            event = self._json.loads(raw)
+                        except Exception:
+                            continue
+                        if event.get("type") == "content_block_delta":
+                            delta = (event.get("delta") or {}).get("text") or ""
+                            if delta:
+                                yield delta
+        except self._urllib_error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="ignore")[:400]
+            raise RuntimeError(f"Anthropic stream HTTP {exc.code}: {detail}") from exc
+
+
+def get_llm_provider(
+    *,
+    provider: str | None = None,
+    model: str | None = None,
+) -> LLMProvider:
+    from app.services.rag.llm_providers import resolve_provider_credentials
+
+    creds = resolve_provider_credentials(provider or "openai")
+    if not creds["configured"]:
+        # Fallback historique LLM_* si openai non séparé
+        if (provider or "openai") == "openai":
+            return OpenAICompatibleLLM(model=model)
+        raise RuntimeError(
+            f"Provider « {creds['provider']} » non configuré (clé API manquante)"
+        )
+    if creds["kind"] == "anthropic":
+        return AnthropicLLM(
+            api_key=creds["api_key"],
+            base_url=creds["base_url"],
+            model=model,
+        )
+    return OpenAICompatibleLLM(
+        api_key=creds["api_key"],
+        base_url=creds["base_url"],
+        model=model,
+    )
+
+
+def get_llm_for_assistant(assistant) -> LLMProvider:
+    provider = getattr(assistant, "llm_provider", None) or "openai"
+    model = getattr(assistant, "model", None) or None
+    return get_llm_provider(provider=provider, model=model)
+
+
+def load_assistant_prompt_generator_template() -> str:
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parent / "prompts" / "assistant_prompt_generator.txt"
+    return path.read_text(encoding="utf-8")
+
+
+def generate_assistant_system_prompt(
+    *,
+    assistant_name: str,
+    assistant_description: str | None,
+    knowledge_base_name: str,
+    knowledge_base_description: str | None,
+    llm_provider: str | None = None,
+    model: str | None = None,
+) -> str:
+    """Utilise le meta-prompt du projet pour produire le system_prompt de l'assistant."""
+    template = load_assistant_prompt_generator_template()
+    filled = (
+        template.replace("{{assistant_name}}", (assistant_name or "").strip() or "Assistant")
+        .replace(
+            "{{assistant_description}}",
+            (assistant_description or "").strip() or "(non précisée)",
+        )
+        .replace(
+            "{{knowledge_base_name}}",
+            (knowledge_base_name or "").strip() or "(KB)",
+        )
+        .replace(
+            "{{knowledge_base_description}}",
+            (knowledge_base_description or "").strip() or "(non précisée)",
+        )
+    )
+    llm = get_llm_provider(provider=llm_provider or "openai", model=model)
+    raw = llm.generate(
+        system_prompt=(
+            "Tu génères uniquement le system prompt demandé, complet et professionnel. "
+            "Pas de préambule, pas de guillemets enveloppants, pas de commentaire."
+        ),
+        user_prompt=filled,
+        temperature=0.45,
+    )
+    text = (raw or "").strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+    return text
 
 
 def build_conversational_prompt(assistant_system: str, message: str) -> tuple[str, str]:

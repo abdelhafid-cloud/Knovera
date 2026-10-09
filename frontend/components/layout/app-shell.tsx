@@ -3,7 +3,9 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
+  createContext,
   useCallback,
+  useContext,
   useEffect,
   useState,
   type ComponentType,
@@ -55,6 +57,8 @@ type NavLink = {
   label: string;
   icon: ComponentType<LucideProps>;
   exact?: boolean;
+  /** Infobulle sidebar (lecture seule org admin, etc.) */
+  title?: string;
 };
 
 type NavGroup = {
@@ -63,6 +67,9 @@ type NavGroup = {
 };
 
 const SIDEBAR_KEY = "rag_sidebar_collapsed";
+
+const ShellChromeContext = createContext(false);
+let cachedOrgs: Organization[] | null = null;
 
 function isNavActive(pathname: string, href: string, exact?: boolean) {
   if (exact || href.split("/").filter(Boolean).length <= 1) {
@@ -75,19 +82,21 @@ function NavItem({
   href,
   icon: Icon,
   label,
+  title,
   active,
   collapsed,
 }: {
   href: string;
   icon: ComponentType<LucideProps>;
   label: string;
+  title?: string;
   active: boolean;
   collapsed: boolean;
 }) {
   return (
     <Link
       href={href}
-      title={label}
+      title={title ?? label}
       className={cn(
         "group relative flex h-9 items-center rounded-md text-sm transition-colors",
         collapsed ? "justify-center px-0" : "gap-2.5 px-2.5",
@@ -125,9 +134,16 @@ function OrganizationSwitcher() {
 
   useEffect(() => {
     if (!isSuperAdmin) return;
+    if (cachedOrgs) {
+      setOrgs(cachedOrgs);
+      return;
+    }
     api
       .get<Organization[]>("/api/organizations")
-      .then((r) => setOrgs(r.data || []))
+      .then((r) => {
+        cachedOrgs = r.data || [];
+        setOrgs(cachedOrgs);
+      })
       .catch(() => setOrgs([]));
   }, [isSuperAdmin]);
 
@@ -146,7 +162,10 @@ function OrganizationSwitcher() {
     setLoading(true);
     try {
       await switchOrganization(orgId);
-      router.push("/organization");
+      // Super admin reste dans la console plateforme (sidebar figée)
+      router.push(
+        isSuperAdmin ? `/super-admin/organizations/${orgId}` : "/organization"
+      );
     } finally {
       setLoading(false);
     }
@@ -279,9 +298,24 @@ export function AppSidebar() {
   const orgLinks: NavLink[] = [
     { href: "/organization", label: "Vue d'ensemble", icon: LayoutDashboard, exact: true },
     { href: "/organization/members", label: "Membres", icon: Users },
-    { href: "/organization/documents", label: "Documents", icon: FileText },
-    { href: "/organization/knowledge-bases", label: "Knowledge bases", icon: BookOpen },
-    { href: "/organization/assistants", label: "Assistants", icon: Bot },
+    {
+      href: "/organization/documents",
+      label: "Documents",
+      icon: FileText,
+      title: "Documents — consultation (provisionnés par la plateforme)",
+    },
+    {
+      href: "/organization/knowledge-bases",
+      label: "Knowledge bases",
+      icon: BookOpen,
+      title: "Knowledge bases — consultation (provisionnées par la plateforme)",
+    },
+    {
+      href: "/organization/assistants",
+      label: "Assistants",
+      icon: Bot,
+      title: "Assistants — consultation et gestion des accès",
+    },
     { href: "/organization/conversations", label: "Conversations", icon: MessageSquare },
     { href: "/organization/settings", label: "Paramètres", icon: Settings },
     { href: "/user/profile", label: "Mon profil", icon: UserRound },
@@ -296,21 +330,16 @@ export function AppSidebar() {
   let groups: NavGroup[] | null = null;
   let links: NavLink[] = userLinks;
 
-  if (pathname.startsWith("/super-admin") && isSuperAdmin) {
+  // Sidebar figée par rôle (profil /user ne bascule plus vers l’espace membre)
+  if (isSuperAdmin) {
     groups = superGroups;
     sectionLabel = "Super Admin";
-  } else if (pathname.startsWith("/organization") && (isOrgAdmin || isSuperAdmin)) {
+  } else if (isOrgAdmin) {
     links = orgLinks;
     sectionLabel = "Organisation";
   } else if (pathname.startsWith("/user")) {
     links = userLinks;
     sectionLabel = "Espace utilisateur";
-  } else if (isSuperAdmin && !organization) {
-    groups = superGroups;
-    sectionLabel = "Super Admin";
-  } else if (isOrgAdmin || (isSuperAdmin && organization)) {
-    links = orgLinks;
-    sectionLabel = "Organisation";
   }
 
   const initials = (user?.first_name?.[0] || user?.email?.[0] || "?").toUpperCase();
@@ -336,7 +365,9 @@ export function AppSidebar() {
             <div className="min-w-0 flex-1 overflow-hidden transition-opacity duration-300">
               <p className="truncate text-sm font-semibold leading-none">Knovera</p>
               <p className="mt-1 truncate text-[11px] text-muted-foreground">
-                {organization?.name || (isSuperAdmin ? "Console plateforme" : "Workspace")}
+                {isSuperAdmin
+                  ? "Console plateforme"
+                  : organization?.name || "Workspace"}
               </p>
             </div>
             <Button
@@ -392,6 +423,7 @@ export function AppSidebar() {
                       href={item.href}
                       icon={item.icon}
                       label={item.label}
+                      title={item.title}
                       collapsed={mounted ? collapsed : false}
                       active={isNavActive(pathname, item.href, item.exact)}
                     />
@@ -406,6 +438,7 @@ export function AppSidebar() {
                       href={item.href}
                       icon={item.icon}
                       label={item.label}
+                      title={item.title}
                       collapsed={mounted ? collapsed : false}
                       active={isNavActive(pathname, item.href, item.exact)}
                     />
@@ -453,23 +486,6 @@ export function AppSidebar() {
                 <p className="text-xs text-muted-foreground">{user?.email}</p>
               </div>
             </DropdownMenuLabel>
-            <DropdownMenuSeparator />
-            {isSuperAdmin && (
-              <DropdownMenuItem onClick={() => (window.location.href = "/super-admin")}>
-                Vue Super Admin
-              </DropdownMenuItem>
-            )}
-            {(isOrgAdmin || isSuperAdmin) && (
-              <DropdownMenuItem onClick={() => (window.location.href = "/organization")}>
-                Dashboard organisation
-              </DropdownMenuItem>
-            )}
-            <DropdownMenuItem onClick={() => (window.location.href = "/user/profile")}>
-              Mon profil
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => (window.location.href = "/user/assistants")}>
-              Mes assistants
-            </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem
               onClick={async () => {
@@ -549,7 +565,20 @@ export function AppHeader({ title, breadcrumbs = [] }: { title: string; breadcru
   );
 }
 
-export function DashboardShell({
+export function DashboardFrame({ children }: { children: ReactNode }) {
+  return (
+    <ShellChromeContext.Provider value={true}>
+      <RequireAuth>
+        <div className="flex h-svh w-full overflow-hidden bg-background">
+          <AppSidebar />
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-background">{children}</div>
+        </div>
+      </RequireAuth>
+    </ShellChromeContext.Provider>
+  );
+}
+
+function DashboardBody({
   title,
   breadcrumbs,
   children,
@@ -561,16 +590,39 @@ export function DashboardShell({
   actions?: ReactNode;
 }) {
   return (
+    <>
+      <AppHeader title={title} breadcrumbs={breadcrumbs} />
+      <main className="min-h-0 flex-1 space-y-6 overflow-y-auto p-4 md:p-6">
+        {actions ? <div className="flex justify-end">{actions}</div> : null}
+        {children}
+      </main>
+    </>
+  );
+}
+
+export function DashboardShell({
+  title,
+  breadcrumbs,
+  children,
+  actions,
+}: {
+  title: string;
+  breadcrumbs?: string[];
+  children: ReactNode;
+  actions?: ReactNode;
+}) {
+  const hasChrome = useContext(ShellChromeContext);
+  const body = (
+    <DashboardBody title={title} breadcrumbs={breadcrumbs} actions={actions}>
+      {children}
+    </DashboardBody>
+  );
+  if (hasChrome) return body;
+  return (
     <RequireAuth>
       <div className="flex h-svh w-full overflow-hidden bg-background">
         <AppSidebar />
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-background">
-          <AppHeader title={title} breadcrumbs={breadcrumbs} />
-          <main className="min-h-0 flex-1 space-y-6 overflow-y-auto p-4 md:p-6">
-            {actions ? <div className="flex justify-end">{actions}</div> : null}
-            {children}
-          </main>
-        </div>
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-background">{body}</div>
       </div>
     </RequireAuth>
   );
@@ -580,15 +632,26 @@ export function StatCard({
   label,
   value,
   hint,
+  icon,
 }: {
   label: string;
   value?: string | number | null;
   hint?: string;
+  /** @deprecated ignoré — toutes les cartes partagent le même style */
+  tone?: string;
+  icon?: ReactNode;
 }) {
   return (
-    <Card>
+    <Card className="border-border bg-card">
       <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-        <CardDescription className="text-sm font-medium text-muted-foreground">{label}</CardDescription>
+        <CardDescription className="text-sm font-medium text-muted-foreground">
+          {label}
+        </CardDescription>
+        {icon ? (
+          <div className="flex size-8 items-center justify-center rounded-lg bg-primary/15 text-primary">
+            {icon}
+          </div>
+        ) : null}
       </CardHeader>
       <CardContent>
         <CardTitle className="text-2xl font-semibold tabular-nums tracking-tight">

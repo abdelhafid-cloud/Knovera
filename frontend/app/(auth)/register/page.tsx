@@ -32,6 +32,11 @@ function RegisterForm() {
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [loading, setLoading] = useState(false);
+  const [trialOrg, setTrialOrg] = useState("");
+  const [trialEmail, setTrialEmail] = useState("");
+  const [trialFirst, setTrialFirst] = useState("");
+  const [trialLast, setTrialLast] = useState("");
+  const [trialLoading, setTrialLoading] = useState(false);
 
   useEffect(() => {
     if (!tokenFromUrl) return;
@@ -43,16 +48,115 @@ function RegisterForm() {
       .finally(() => setLoadingPreview(false));
   }, [tokenFromUrl]);
 
+  const onTrialSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (password !== confirmPassword) {
+      toast.error("Les mots de passe ne correspondent pas");
+      return;
+    }
+    setTrialLoading(true);
+    try {
+      const res = await api.post<LoginResult>("/api/auth/trial", {
+        org_name: trialOrg.trim(),
+        email: trialEmail.trim(),
+        password,
+        first_name: trialFirst.trim(),
+        last_name: trialLast.trim(),
+      });
+      if (res.data?.access_token) {
+        api.setAccessToken(res.data.access_token);
+        const memberships = res.data.user?.memberships || [];
+        if (memberships[0]) api.setOrganizationId(memberships[0].organization_id);
+      }
+      toast.success("Essai créé — bienvenue !");
+      router.push(homeForUser(res.data?.user));
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Impossible de créer l'essai");
+    } finally {
+      setTrialLoading(false);
+    }
+  };
+
   if (!tokenFromUrl && !token) {
     return (
-      <div className="space-y-4 text-center">
-        <p className="text-sm text-muted-foreground">
-          L’inscription libre est désactivée. Un Super Admin ou un Admin doit créer votre compte.
-        </p>
-        <Button asChild className="w-full">
-          <Link href="/login">Retour à la connexion</Link>
+      <form className="space-y-4" onSubmit={onTrialSubmit}>
+        <div className="text-center">
+          <p className="text-base font-semibold tracking-tight">Essai gratuit</p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Créez votre organisation et commencez en quelques minutes.
+          </p>
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor="org_name">Nom de l&apos;organisation</Label>
+          <Input
+            id="org_name"
+            value={trialOrg}
+            onChange={(e) => setTrialOrg(e.target.value)}
+            required
+          />
+        </div>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div className="space-y-2">
+            <Label htmlFor="first_name">Prénom</Label>
+            <Input
+              id="first_name"
+              value={trialFirst}
+              onChange={(e) => setTrialFirst(e.target.value)}
+              required
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="last_name">Nom</Label>
+            <Input
+              id="last_name"
+              value={trialLast}
+              onChange={(e) => setTrialLast(e.target.value)}
+              required
+            />
+          </div>
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor="trial_email">Email</Label>
+          <Input
+            id="trial_email"
+            type="email"
+            autoComplete="email"
+            value={trialEmail}
+            onChange={(e) => setTrialEmail(e.target.value)}
+            required
+          />
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor="trial_password">Mot de passe</Label>
+          <Input
+            id="trial_password"
+            type="password"
+            autoComplete="new-password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            required
+            minLength={8}
+          />
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor="trial_confirm">Confirmer le mot de passe</Label>
+          <Input
+            id="trial_confirm"
+            type="password"
+            autoComplete="new-password"
+            value={confirmPassword}
+            onChange={(e) => setConfirmPassword(e.target.value)}
+            required
+            minLength={8}
+          />
+        </div>
+        <Button className="w-full" type="submit" disabled={trialLoading}>
+          {trialLoading ? <Loader2 className="size-4 animate-spin" /> : "Démarrer l'essai"}
         </Button>
-      </div>
+        <Button asChild className="w-full" variant="outline">
+          <Link href="/login">J&apos;ai déjà un compte</Link>
+        </Button>
+      </form>
     );
   }
 

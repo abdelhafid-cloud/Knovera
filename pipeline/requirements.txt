@@ -1,0 +1,22 @@
+# Pipeline Knovera — indexation (séparé du backend)
+#   py -3.12 -m venv pipeline/.venv
+#   pipeline\.venv\Scripts\pip install -r pipeline/requirements.txt
+#
+# Démarrage : powershell -File scripts/start-pipeline.ps1
+
+sqlalchemy>=2.0.38
+psycopg[binary]>=3.2.10
+python-dotenv>=1.0.1
+redis>=5.2.1
+rq>=2.1.0
+boto3>=1.36.20
+qdrant-client>=1.13.2
+cohere>=5.13.12
+pypdf>=5.3.0
+pypdfium2>=4.30.0
+python-docx>=1.1.2
+openpyxl>=3.1.5
+Pillow>=10.4.0
+
+# OCR cloud (Mistral Document AI)
+# Clé : MISTRAL_API_KEY dans .env racine

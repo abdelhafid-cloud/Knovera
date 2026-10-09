@@ -160,7 +160,7 @@ export default function ProfilePage() {
           <CardHeader>
             <CardTitle>Photo de profil</CardTitle>
             <CardDescription>
-              Recadrez en cercle avant l’envoi. Export 512×512 JPEG (max 2 Mo).
+              Optionnel. Sans photo, un avatar est généré à partir du nom. Recadrage en cercle, 512×512 JPEG.
             </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col items-start gap-4 sm:flex-row sm:items-center">

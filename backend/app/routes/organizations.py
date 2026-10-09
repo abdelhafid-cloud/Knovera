@@ -181,7 +181,9 @@ def update_organization(org_id):
     data = request.get_json(silent=True) or {}
     if "name" in data and data["name"]:
         org.name = data["name"].strip()
-    # logo_url raw string only for external URLs; uploads use POST /logo
+    # logo_url : super admin seulement sur son espace, admin org sur la sienne
+    if "logo_url" in data and not _can_manage_org_logo(org):
+        return api_error("Vous ne pouvez changer que le logo de votre organisation", 403)
     if "logo_url" in data and data["logo_url"] is None:
         org_service.remove_organization_logo(org)
         return api_success(org_service.organization_to_dict(org, include_usage=True))
@@ -189,10 +191,24 @@ def update_organization(org_id):
         org.logo_url = data["logo_url"].strip() or None
     if "settings" in data and isinstance(data["settings"], dict):
         incoming = dict(data["settings"])
-        if not g.is_super_admin:
+        # Quotas : super-admin ou org_admin de cette org
+        can_edit_quotas = g.is_super_admin or (
+            g.membership
+            and g.membership.organization_id == org.id
+            and g.membership.role
+            and g.membership.role.code == "org_admin"
+        )
+        if not can_edit_quotas:
             incoming.pop("quotas", None)
+        incoming.pop("theme_color", None)
         org.settings = {**(org.settings or {}), **incoming}
-    if g.is_super_admin and "quotas" in data and isinstance(data["quotas"], dict):
+    can_edit_quotas = g.is_super_admin or (
+        g.membership
+        and g.membership.organization_id == org.id
+        and g.membership.role
+        and g.membership.role.code == "org_admin"
+    )
+    if can_edit_quotas and "quotas" in data and isinstance(data["quotas"], dict):
         from app.services.organizations import quotas as quota_service
 
         quota_service.set_quotas(org, data["quotas"])
@@ -204,8 +220,13 @@ def update_organization(org_id):
 
 
 def _can_manage_org_logo(org) -> bool:
+    """Super admin : uniquement son espace. Admin org : uniquement son organisation."""
+    settings = org.settings or {}
     if g.is_super_admin:
-        return True
+        return bool(
+            settings.get("is_super_admin_workspace")
+            and str(settings.get("owner_user_id") or "") == str(g.current_user.id)
+        )
     membership = (
         db.session.query(OrganizationMember)
         .filter_by(user_id=g.current_user.id, organization_id=org.id, status="active")
@@ -225,7 +246,7 @@ def upload_organization_logo(org_id):
     if not org or org.status == "deleted":
         return api_error("Organisation introuvable", 404)
     if not _can_manage_org_logo(org):
-        return api_error("Permission insuffisante", 403)
+        return api_error("Vous ne pouvez changer que le logo de votre organisation", 403)
     file = request.files.get("logo") or request.files.get("file") or request.files.get("avatar")
     updated, err = org_service.upload_organization_logo(org, file)
     if err:
@@ -245,7 +266,7 @@ def delete_organization_logo(org_id):
     if not org or org.status == "deleted":
         return api_error("Organisation introuvable", 404)
     if not _can_manage_org_logo(org):
-        return api_error("Permission insuffisante", 403)
+        return api_error("Vous ne pouvez changer que le logo de votre organisation", 403)
     org_service.remove_organization_logo(org)
     write_audit("organization.logo_delete", resource_type="organization", resource_id=str(org.id))
     return api_success(org_service.organization_to_dict(org, include_usage=True))

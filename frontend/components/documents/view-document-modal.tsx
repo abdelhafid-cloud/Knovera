@@ -12,7 +12,7 @@ import { AppModal } from "@/components/ui/app-modal";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
-import type { DocumentItem } from "@/lib/types";
+import type { DocumentChunk, DocumentItem } from "@/lib/types";
 import { formatBytes } from "@/lib/utils";
 
 type Props = {
@@ -46,6 +46,8 @@ export function ViewDocumentModal({ open, document, detailPath, onClose }: Props
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [detail, setDetail] = useState<DocumentItem | null>(null);
+  const [chunks, setChunks] = useState<DocumentChunk[]>([]);
+  const [chunksLoading, setChunksLoading] = useState(false);
 
   useEffect(() => {
     if (!open || !document || !detailPath) return;
@@ -55,6 +57,7 @@ export function ViewDocumentModal({ open, document, detailPath, onClose }: Props
       setLoading(true);
       setError(null);
       setDetail(null);
+      setChunks([]);
       try {
         const r = await api.get<DocumentItem>(detailPath);
         if (!cancelled) setDetail(r.data);
@@ -73,6 +76,26 @@ export function ViewDocumentModal({ open, document, detailPath, onClose }: Props
     };
   }, [open, document, detailPath]);
 
+  useEffect(() => {
+    if (!open || !document?.id) return;
+    let cancelled = false;
+    setChunksLoading(true);
+    api
+      .get<DocumentChunk[]>(`/api/documents/${document.id}/chunks`)
+      .then((r) => {
+        if (!cancelled) setChunks(r.data || []);
+      })
+      .catch(() => {
+        if (!cancelled) setChunks([]);
+      })
+      .finally(() => {
+        if (!cancelled) setChunksLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, document?.id]);
+
   if (!document) return null;
 
   const d = detail || document;
@@ -84,7 +107,9 @@ export function ViewDocumentModal({ open, document, detailPath, onClose }: Props
         ? "Excel"
         : d.mime_type?.includes("text")
           ? "Texte"
-          : d.mime_type || "Fichier";
+          : d.mime_type?.startsWith("image/")
+            ? "Image"
+            : d.mime_type || "Fichier";
 
   return (
     <AppModal
@@ -187,11 +212,47 @@ export function ViewDocumentModal({ open, document, detailPath, onClose }: Props
             </div>
           )}
 
+          {d.pipeline_step ? (
+            <p className="text-xs text-muted-foreground">
+              Étape pipeline : <span className="font-medium text-foreground">{d.pipeline_step}</span>
+            </p>
+          ) : null}
+
           {d.error_message ? (
             <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2.5 text-sm text-destructive">
               {d.error_message}
             </div>
           ) : null}
+
+          <div className="space-y-2 border-t border-border pt-4">
+            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              Aperçu des chunks
+            </p>
+            {chunksLoading ? (
+              <div className="flex justify-center py-4">
+                <Loader2 className="size-4 animate-spin text-muted-foreground" />
+              </div>
+            ) : chunks.length === 0 ? (
+              <p className="text-sm text-muted-foreground">Aucun chunk indexé.</p>
+            ) : (
+              <ul className="max-h-48 space-y-2 overflow-y-auto">
+                {chunks.slice(0, 20).map((c) => (
+                  <li
+                    key={c.id}
+                    className="rounded-lg border border-border/80 bg-muted/20 px-3 py-2 text-xs"
+                  >
+                    <p className="font-medium text-muted-foreground">
+                      Chunk {c.chunk_index ?? "—"}
+                      {c.page_number != null ? ` · page ${c.page_number}` : ""}
+                    </p>
+                    <p className="mt-1 line-clamp-3 whitespace-pre-wrap text-foreground">
+                      {c.content || "—"}
+                    </p>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
         </div>
       )}
     </AppModal>

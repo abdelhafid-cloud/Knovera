@@ -195,6 +195,138 @@ class ApiClient {
     return this.request<T>(path, { method: "POST", formData });
   }
 
+  private streamAuthHeaders(): Record<string, string> {
+    this.hydrateFromStorage();
+    const headers: Record<string, string> = { Accept: "text/event-stream" };
+    const token = this.accessToken;
+    if (token) headers.Authorization = `Bearer ${token}`;
+    if (this.organizationId) headers["X-Organization-Id"] = this.organizationId;
+    return headers;
+  }
+
+  private async consumeSse(
+    res: Response,
+    onEvent: (event: Record<string, unknown>) => void,
+    signal?: AbortSignal
+  ): Promise<void> {
+    if (!res.ok) {
+      const json = await res.json().catch(() => null);
+      throw new ApiError(
+        json?.error?.message || "Erreur flux SSE",
+        res.status,
+        json?.error?.code
+      );
+    }
+    const reader = res.body?.getReader();
+    if (!reader) throw new ApiError("Flux SSE indisponible", 0, "stream_error");
+
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    const flushLine = (line: string) => {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith("data:")) return;
+      const payload = trimmed.slice(5).trim();
+      if (!payload || payload === "[DONE]") return;
+      try {
+        onEvent(JSON.parse(payload) as Record<string, unknown>);
+      } catch {
+        /* ligne non JSON */
+      }
+    };
+
+    while (true) {
+      if (signal?.aborted) {
+        await reader.cancel().catch(() => null);
+        break;
+      }
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+      for (const line of lines) flushLine(line);
+    }
+    if (buffer.trim()) flushLine(buffer);
+  }
+
+  /** POST JSON puis lecture SSE (lignes data: JSON). */
+  async streamChat(
+    path: string,
+    body: unknown,
+    onEvent: (event: Record<string, unknown>) => void,
+    signal?: AbortSignal
+  ): Promise<void> {
+    const run = async () => {
+      const res = await fetch(`${API_URL}${path}`, {
+        method: "POST",
+        headers: {
+          ...this.streamAuthHeaders(),
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(body),
+        credentials: "include",
+        signal,
+      }).catch(() => {
+        throw new ApiError(
+          `Impossible de joindre l'API (${API_URL}). Vérifiez que le backend et Docker tournent.`,
+          0,
+          "network_error"
+        );
+      });
+      await this.consumeSse(res, onEvent, signal);
+    };
+
+    try {
+      await run();
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 401) {
+        const refreshed = await this.tryRefresh();
+        if (refreshed) {
+          await run();
+          return;
+        }
+      }
+      throw e;
+    }
+  }
+
+  /** GET SSE (ex. événements documents). */
+  async streamEvents(
+    path: string,
+    onEvent: (event: Record<string, unknown>) => void,
+    signal?: AbortSignal
+  ): Promise<void> {
+    const run = async () => {
+      const res = await fetch(`${API_URL}${path}`, {
+        method: "GET",
+        headers: this.streamAuthHeaders(),
+        credentials: "include",
+        signal,
+      }).catch(() => {
+        throw new ApiError(
+          `Impossible de joindre l'API (${API_URL}). Vérifiez que le backend et Docker tournent.`,
+          0,
+          "network_error"
+        );
+      });
+      await this.consumeSse(res, onEvent, signal);
+    };
+
+    try {
+      await run();
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 401) {
+        const refreshed = await this.tryRefresh();
+        if (refreshed) {
+          await run();
+          return;
+        }
+      }
+      throw e;
+    }
+  }
+
   async getBlob(path: string): Promise<Blob> {
     this.hydrateFromStorage();
     const headers: Record<string, string> = {};

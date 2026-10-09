@@ -10,40 +10,33 @@ logger = get_doc_logger(__name__)
 
 
 class QdrantVectorStore:
-    def __init__(self):
+    def __init__(self, collection_name: str | None = None):
         self.client = QdrantClient(
             url=current_app.config["QDRANT_URL"],
             api_key=current_app.config.get("QDRANT_API_KEY"),
             check_compatibility=False,
         )
-        self.collection = current_app.config["QDRANT_COLLECTION"]
+        self.collection = collection_name or current_app.config["QDRANT_COLLECTION"]
         self.dimension = current_app.config["COHERE_EMBED_DIMENSION"]
 
     def ensure_collection(self):
         collections = [c.name for c in self.client.get_collections().collections]
-        if self.collection not in collections:
-            self.client.create_collection(
-                collection_name=self.collection,
-                vectors_config=qmodels.VectorParams(
-                    size=self.dimension,
-                    distance=qmodels.Distance.COSINE,
-                ),
-            )
+        if self.collection in collections:
+            return
+        self.client.create_collection(
+            collection_name=self.collection,
+            vectors_config=qmodels.VectorParams(
+                size=self.dimension,
+                distance=qmodels.Distance.COSINE,
+            ),
+        )
+        for field in ("organization_id", "knowledge_base_id", "document_id"):
             self.client.create_payload_index(
                 collection_name=self.collection,
-                field_name="organization_id",
+                field_name=field,
                 field_schema=qmodels.PayloadSchemaType.KEYWORD,
             )
-            self.client.create_payload_index(
-                collection_name=self.collection,
-                field_name="knowledge_base_id",
-                field_schema=qmodels.PayloadSchemaType.KEYWORD,
-            )
-            self.client.create_payload_index(
-                collection_name=self.collection,
-                field_name="document_id",
-                field_schema=qmodels.PayloadSchemaType.KEYWORD,
-            )
+        logger.info("[QDRANT] collection créée | name=%s", self.collection)
 
     def upsert_chunks(self, points: list[dict]):
         """points: {id, vector, payload}"""
@@ -78,7 +71,6 @@ class QdrantVectorStore:
         top_k: int = 5,
     ):
         self.ensure_collection()
-        # qdrant-client >= 1.16 removed client.search(); use query_points
         response = self.client.query_points(
             collection_name=self.collection,
             query=vector,
@@ -129,7 +121,15 @@ class QdrantVectorStore:
         )
 
     def delete_by_knowledge_base(self, organization_id: str, knowledge_base_id: str):
-        self.ensure_collection()
+        """Purge les points ; si collection = 1 KB, on peut aussi dropper la collection."""
+        names = [c.name for c in self.client.get_collections().collections]
+        if self.collection not in names:
+            return
+        # Collection dédiée KB (préfixe vdb_) → suppression complète
+        if self.collection.startswith("vdb_"):
+            self.client.delete_collection(self.collection)
+            logger.info("[QDRANT] collection supprimée | name=%s", self.collection)
+            return
         self.client.delete(
             collection_name=self.collection,
             points_selector=qmodels.FilterSelector(

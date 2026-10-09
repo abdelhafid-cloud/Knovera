@@ -9,6 +9,10 @@ __pycache__/
 *.egg-info/
 .venv/
 venv/
+.venv312/
+venv312/
+pipeline/.venv312/
+pipeline/.venv/
 .pytest_cache/
 .mypy_cache/
 .coverage

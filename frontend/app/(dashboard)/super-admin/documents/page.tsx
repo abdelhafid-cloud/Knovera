@@ -292,7 +292,7 @@ export default function PlatformDocumentsPage() {
               ref={fileRef}
               type="file"
               className="hidden"
-              accept=".pdf,.docx,.txt,.xlsx"
+              accept=".pdf,.docx,.txt,.xlsx,.png,.jpg,.jpeg,.webp"
               onChange={onUpload}
             />
             <Button
@@ -430,7 +430,7 @@ export default function PlatformDocumentsPage() {
                       <DropdownMenuContent align="end">
                         <DropdownMenuItem onClick={() => openView(d)}>
                           <Eye className="size-4" />
-                          Visualiser
+                          Afficher
                         </DropdownMenuItem>
                         <DropdownMenuItem onClick={() => openEdit(d)}>
                           <Pencil className="size-4" />

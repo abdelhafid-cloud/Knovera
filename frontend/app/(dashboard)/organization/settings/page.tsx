@@ -1,16 +1,25 @@
 "use client";
 
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { Camera, Loader2, Trash2 } from "lucide-react";
+import { Camera, Loader2, Save, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { useAuth } from "@/components/providers/auth-provider";
 import { api } from "@/lib/api";
-import type { Organization } from "@/lib/types";
+import type { Organization, OrgQuotas, QuotaItem } from "@/lib/types";
 import { DashboardShell } from "@/components/layout/app-shell";
 import { OrgLogo } from "@/components/organizations/org-logo";
+import { QuotaBar } from "@/components/ui/quota-bar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+
+type QuotaForm = {
+  max_members: number;
+  max_documents: number;
+  max_assistants: number;
+  max_knowledge_bases: number;
+  max_storage_gb: number;
+};
 
 export default function OrgSettingsPage() {
   const { organization, refreshMe } = useAuth();
@@ -19,10 +28,45 @@ export default function OrgSettingsPage() {
   const [uploading, setUploading] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
+  const [usageItems, setUsageItems] = useState<QuotaItem[]>([]);
+  const [usageLoading, setUsageLoading] = useState(true);
+  const [quotaForm, setQuotaForm] = useState<QuotaForm>({
+    max_members: 50,
+    max_documents: 500,
+    max_assistants: 20,
+    max_knowledge_bases: 20,
+    max_storage_gb: 5,
+  });
+  const [savingQuotas, setSavingQuotas] = useState(false);
+
   useEffect(() => {
     setName(organization?.name || "");
     setLogoUrl(organization?.logo_url || null);
   }, [organization?.name, organization?.logo_url]);
+
+  useEffect(() => {
+    if (!organization?.id) return;
+    setUsageLoading(true);
+    api
+      .get<{ items?: QuotaItem[]; quotas?: OrgQuotas }>(
+        `/api/organizations/${organization.id}/usage`
+      )
+      .then((r) => {
+        setUsageItems(r.data?.items || []);
+        const q = r.data?.quotas || organization.quotas;
+        if (q) {
+          setQuotaForm({
+            max_members: q.max_members,
+            max_documents: q.max_documents,
+            max_assistants: q.max_assistants,
+            max_knowledge_bases: q.max_knowledge_bases,
+            max_storage_gb: Math.round(q.max_storage_bytes / (1024 * 1024 * 1024)),
+          });
+        }
+      })
+      .catch((e: Error) => toast.error(e.message))
+      .finally(() => setUsageLoading(false));
+  }, [organization?.id, organization?.quotas]);
 
   const save = async (e: FormEvent) => {
     e.preventDefault();
@@ -33,6 +77,30 @@ export default function OrgSettingsPage() {
       toast.success("Paramètres enregistrés");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Erreur");
+    }
+  };
+
+  const saveQuotas = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!organization?.id) return;
+    setSavingQuotas(true);
+    try {
+      const r = await api.patch<Organization>(`/api/organizations/${organization.id}`, {
+        quotas: {
+          max_members: Number(quotaForm.max_members),
+          max_documents: Number(quotaForm.max_documents),
+          max_assistants: Number(quotaForm.max_assistants),
+          max_knowledge_bases: Number(quotaForm.max_knowledge_bases),
+          max_storage_bytes: Number(quotaForm.max_storage_gb) * 1024 * 1024 * 1024,
+        },
+      });
+      setUsageItems(r.data?.items || usageItems);
+      await refreshMe();
+      toast.success("Quotas enregistrés");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Erreur");
+    } finally {
+      setSavingQuotas(false);
     }
   };
 
@@ -135,6 +203,60 @@ export default function OrgSettingsPage() {
           </div>
           <Button type="submit">Enregistrer</Button>
         </form>
+
+        <section className="rounded-xl border border-border bg-card p-5 space-y-4">
+          <h2 className="text-sm font-semibold">Usage et quotas</h2>
+          {usageLoading ? (
+            <div className="flex justify-center py-6">
+              <Loader2 className="size-4 animate-spin text-muted-foreground" />
+            </div>
+          ) : usageItems.length === 0 ? (
+            <p className="text-sm text-muted-foreground">Aucune donnée d&apos;usage.</p>
+          ) : (
+            <div className="space-y-4">
+              {usageItems.map((item) => (
+                <QuotaBar key={item.key} item={item} />
+              ))}
+            </div>
+          )}
+
+          <form onSubmit={saveQuotas} className="grid gap-3 border-t border-border pt-4 sm:grid-cols-2">
+            <p className="sm:col-span-2 text-xs text-muted-foreground">
+              Réservé aux administrateurs organisation — ajustez les plafonds.
+            </p>
+            {(
+              [
+                ["max_members", "Max membres"],
+                ["max_documents", "Max documents"],
+                ["max_assistants", "Max assistants"],
+                ["max_knowledge_bases", "Max KB"],
+                ["max_storage_gb", "Max stockage (Go)"],
+              ] as const
+            ).map(([key, label]) => (
+              <div key={key} className="space-y-1.5">
+                <Label>{label}</Label>
+                <Input
+                  type="number"
+                  min={0}
+                  value={quotaForm[key]}
+                  onChange={(e) =>
+                    setQuotaForm({ ...quotaForm, [key]: Number(e.target.value) })
+                  }
+                />
+              </div>
+            ))}
+            <div className="sm:col-span-2">
+              <Button type="submit" disabled={savingQuotas}>
+                {savingQuotas ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  <Save className="size-4" />
+                )}
+                Enregistrer les quotas
+              </Button>
+            </div>
+          </form>
+        </section>
       </div>
     </DashboardShell>
   );

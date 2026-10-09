@@ -72,6 +72,8 @@ class Organization(db.Model, TimestampMixin):
     logo_url: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(OrgStatus, default="active", nullable=False)
     settings: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    # Bucket MinIO dédié à l'organisation (documents des KB)
+    minio_bucket: Mapped[str | None] = mapped_column(String(63))
 
     members = relationship("OrganizationMember", back_populates="organization", cascade="all, delete-orphan")
     knowledge_bases = relationship("KnowledgeBase", back_populates="organization", cascade="all, delete-orphan")
@@ -155,6 +157,11 @@ class Invitation(db.Model, TimestampMixin):
 
 class KnowledgeBase(db.Model, TimestampMixin):
     __tablename__ = "knowledge_bases"
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id", "vector_db_number", name="uq_kb_org_vector_db_number"
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=gen_uuid)
     organization_id: Mapped[uuid.UUID] = mapped_column(
@@ -164,6 +171,9 @@ class KnowledgeBase(db.Model, TimestampMixin):
     description: Mapped[str | None] = mapped_column(Text)
     rag_settings: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
     created_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
+    # Numéro de collection auto-incrémenté par organisation + collection Qdrant dédiée
+    vector_db_number: Mapped[int | None] = mapped_column(Integer)
+    qdrant_collection: Mapped[str | None] = mapped_column(String(255))
 
     organization = relationship("Organization", back_populates="knowledge_bases")
     documents = relationship("Document", back_populates="knowledge_base")
@@ -189,6 +199,7 @@ class Document(db.Model, TimestampMixin):
     mime_type: Mapped[str] = mapped_column(String(100), nullable=False)
     size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     storage_key: Mapped[str] = mapped_column(Text, nullable=False)
+    storage_bucket: Mapped[str | None] = mapped_column(String(63))
     checksum_sha256: Mapped[str | None] = mapped_column(String(64))
     cloud_url: Mapped[str | None] = mapped_column(Text)
     source_url: Mapped[str | None] = mapped_column(Text)
@@ -243,10 +254,14 @@ class Assistant(db.Model, TimestampMixin):
     description: Mapped[str | None] = mapped_column(Text)
     avatar_url: Mapped[str | None] = mapped_column(Text)
     system_prompt: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    model: Mapped[str] = mapped_column(String(100), nullable=False, default="gpt-4o-mini")
+    # openai | anthropic | openrouter
+    llm_provider: Mapped[str] = mapped_column(String(50), nullable=False, default="openai")
+    model: Mapped[str] = mapped_column(String(150), nullable=False, default="gpt-4o-mini")
     temperature: Mapped[float] = mapped_column(Float, default=0.2, nullable=False)
     top_k: Mapped[int] = mapped_column(Integer, default=5, nullable=False)
     welcome_message: Mapped[str | None] = mapped_column(Text)
+    # Couleur du bandeau chat (#RRGGBB)
+    banner_color: Mapped[str] = mapped_column(String(7), nullable=False, default="#3B82F6")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     rag_settings: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
     created_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
@@ -385,3 +400,30 @@ class AuditLog(db.Model):
     user_agent: Mapped[str | None] = mapped_column(Text)
     meta: Mapped[dict] = mapped_column("metadata", JSONB, default=dict, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class PlatformConfig(db.Model, TimestampMixin):
+    """Singleton — paramètres globaux Knovera (id = 1)."""
+
+    __tablename__ = "platform_config"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    data: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+
+
+class EvalQuestion(db.Model, TimestampMixin):
+    """Question golden pour évaluer la qualité RAG d'une KB."""
+
+    __tablename__ = "eval_questions"
+    __table_args__ = (Index("ix_eval_kb", "knowledge_base_id"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=gen_uuid)
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    knowledge_base_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("knowledge_bases.id", ondelete="CASCADE"), nullable=False
+    )
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    expected_answer: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))

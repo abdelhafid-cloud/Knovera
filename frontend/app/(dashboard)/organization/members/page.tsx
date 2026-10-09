@@ -5,7 +5,7 @@ import { toast } from "sonner";
 import { Loader2, MoreHorizontal, Plus, Trash2, UserX } from "lucide-react";
 import { useAuth } from "@/components/providers/auth-provider";
 import { api } from "@/lib/api";
-import type { Membership, User } from "@/lib/types";
+import type { Assistant, Membership, User } from "@/lib/types";
 import { DashboardShell, EmptyState, PageHeader } from "@/components/layout/app-shell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -28,6 +28,7 @@ import {
 } from "@/components/ui/table";
 import { TableToolbar } from "@/components/ui/table-toolbar";
 import { AppModal } from "@/components/ui/app-modal";
+import { UserAvatar } from "@/components/users/user-avatar";
 
 type MemberRow = Membership & { user?: User | null };
 
@@ -47,6 +48,9 @@ export default function MembersPage() {
     last_name: "",
     role_code: "org_member",
   });
+  const [assistants, setAssistants] = useState<Assistant[]>([]);
+  const [assistantsLoading, setAssistantsLoading] = useState(false);
+  const [assistantIds, setAssistantIds] = useState<string[]>([]);
 
   const load = async () => {
     if (!organization?.id) return;
@@ -61,6 +65,19 @@ export default function MembersPage() {
       .catch((e: Error) => toast.error(e.message))
       .finally(() => setLoading(false));
   }, [organization?.id]);
+
+  useEffect(() => {
+    if (!createOpen || form.role_code !== "org_member") return;
+    setAssistantsLoading(true);
+    api
+      .get<Assistant[]>("/api/assistants")
+      .then((r) => setAssistants(r.data || []))
+      .catch((e: Error) => {
+        setAssistants([]);
+        toast.error(e.message);
+      })
+      .finally(() => setAssistantsLoading(false));
+  }, [createOpen, form.role_code]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -80,7 +97,11 @@ export default function MembersPage() {
     if (!organization?.id) return;
     setCreating(true);
     try {
-      await api.post(`/api/organizations/${organization.id}/members`, form);
+      const body =
+        form.role_code === "org_member"
+          ? { ...form, assistant_ids: assistantIds }
+          : form;
+      await api.post(`/api/organizations/${organization.id}/members`, body);
       toast.success("Utilisateur ajouté");
       setForm({
         email: "",
@@ -89,6 +110,7 @@ export default function MembersPage() {
         last_name: "",
         role_code: "org_member",
       });
+      setAssistantIds([]);
       setCreateOpen(false);
       await load();
     } catch (err) {
@@ -129,9 +151,14 @@ export default function MembersPage() {
   return (
     <DashboardShell title="Membres" breadcrumbs={["Organisation", "Membres"]}>
       <PageHeader
-        description="Seul un Admin organisation peut ajouter des utilisateurs (Admin organisation ou User)."
+        description="Ajoutez des Admin organisation ou des Users ; pour un User, sélectionnez les assistants auxquels il aura accès."
         actions={
-          <Button onClick={() => setCreateOpen(true)}>
+          <Button
+            onClick={() => {
+              setAssistantIds([]);
+              setCreateOpen(true);
+            }}
+          >
             <Plus className="size-4" />
             Ajouter
           </Button>
@@ -164,6 +191,7 @@ export default function MembersPage() {
             <TableHeader>
               <TableRow>
                 <TableHead>Utilisateur</TableHead>
+                <TableHead>Email</TableHead>
                 <TableHead>Rôle</TableHead>
                 <TableHead>Statut</TableHead>
                 <TableHead className="w-[70px] text-right">Actions</TableHead>
@@ -173,8 +201,17 @@ export default function MembersPage() {
               {filtered.map((m) => (
                 <TableRow key={m.id}>
                   <TableCell>
-                    <div className="font-medium">{m.user?.full_name || "—"}</div>
-                    <div className="text-xs text-muted-foreground">{m.user?.email}</div>
+                    <div className="flex items-center gap-3">
+                      <UserAvatar
+                        name={m.user?.full_name}
+                        email={m.user?.email}
+                        avatarUrl={m.user?.avatar_url}
+                      />
+                      <div className="min-w-0 font-medium">{m.user?.full_name || "—"}</div>
+                    </div>
+                  </TableCell>
+                  <TableCell className="max-w-[240px] break-all text-sm text-muted-foreground">
+                    {m.user?.email || "—"}
                   </TableCell>
                   <TableCell>
                     {m.role?.code === "org_admin"
@@ -233,7 +270,7 @@ export default function MembersPage() {
           Ajouter un utilisateur
         </h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          Le premier membre de l’organisation devient Admin organisation automatiquement.
+          Pas de photo à la création : un avatar est généré. Un User est limité aux assistants choisis ; un Admin organisation les voit tous.
         </p>
         <form onSubmit={createMember} className="mt-4 space-y-3">
           <div className="grid grid-cols-2 gap-3">
@@ -278,12 +315,49 @@ export default function MembersPage() {
             <select
               className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
               value={form.role_code}
-              onChange={(e) => setForm({ ...form, role_code: e.target.value })}
+              onChange={(e) => {
+                const role_code = e.target.value;
+                setForm({ ...form, role_code });
+                if (role_code === "org_admin") setAssistantIds([]);
+              }}
             >
               <option value="org_member">User</option>
               <option value="org_admin">Admin organisation</option>
             </select>
           </div>
+          {form.role_code === "org_member" ? (
+            <div className="space-y-2">
+              <Label>Assistants autorisés</Label>
+              {assistantsLoading ? (
+                <div className="flex justify-center py-4">
+                  <Loader2 className="size-4 animate-spin text-muted-foreground" />
+                </div>
+              ) : assistants.length === 0 ? (
+                <p className="text-sm text-muted-foreground">Aucun assistant disponible.</p>
+              ) : (
+                <div className="max-h-40 space-y-1 overflow-y-auto rounded-lg border border-border p-2">
+                  {assistants.map((a) => (
+                    <label
+                      key={a.id}
+                      className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-muted/60"
+                    >
+                      <input
+                        type="checkbox"
+                        className="size-4 rounded border-input"
+                        checked={assistantIds.includes(a.id)}
+                        onChange={() =>
+                          setAssistantIds((prev) =>
+                            prev.includes(a.id) ? prev.filter((id) => id !== a.id) : [...prev, a.id]
+                          )
+                        }
+                      />
+                      <span className="min-w-0 truncate">{a.name}</span>
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : null}
           <div className="flex justify-end gap-2 pt-2">
             <Button type="button" variant="outline" onClick={() => setCreateOpen(false)}>
               Annuler

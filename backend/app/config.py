@@ -67,15 +67,28 @@ class Config:
     COHERE_API_KEY = os.getenv("COHERE_API_KEY", "")
     COHERE_EMBED_MODEL = os.getenv("COHERE_EMBED_MODEL", "embed-multilingual-v3.0")
     COHERE_EMBED_DIMENSION = int(os.getenv("COHERE_EMBED_DIMENSION", "1024"))
+    COHERE_RERANK_MODEL = os.getenv("COHERE_RERANK_MODEL", "rerank-v3.5")
 
+    # LLM — défaut / legacy OpenAI-compatible
     LLM_API_KEY = os.getenv("LLM_API_KEY", "")
     LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1")
     LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")
+    # Providers dédiés (assistants)
+    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "") or os.getenv("LLM_API_KEY", "")
+    OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "") or os.getenv(
+        "LLM_BASE_URL", "https://api.openai.com/v1"
+    )
+    ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+    ANTHROPIC_BASE_URL = os.getenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
+    OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+    OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
 
     MAX_UPLOAD_SIZE_MB = int(os.getenv("MAX_UPLOAD_SIZE_MB", "25"))
     ALLOWED_EXTENSIONS = {
         ext.strip().lower()
-        for ext in os.getenv("ALLOWED_EXTENSIONS", "pdf,docx,txt,xlsx").split(",")
+        for ext in os.getenv(
+            "ALLOWED_EXTENSIONS", "pdf,docx,txt,xlsx,png,jpg,jpeg,webp"
+        ).split(",")
         if ext.strip()
     }
 

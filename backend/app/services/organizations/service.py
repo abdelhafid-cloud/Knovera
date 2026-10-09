@@ -73,10 +73,9 @@ def _find_super_admin_workspace(user: User) -> Organization | None:
 
 
 def ensure_super_admin_workspace(user: User) -> tuple[Organization, KnowledgeBase | None]:
-    """Personal workspace for a super admin (upload / RAG testing).
+    """Personal workspace for a super admin (org + membership only).
 
-    Creates the org once. The default « Base de test » is only created with a
-    brand-new workspace — it is NOT recreated after the user deletes it.
+    No default knowledge base is created — the user provisions KBs themselves.
     """
     from app.models import KnowledgeBase
 
@@ -85,10 +84,8 @@ def ensure_super_admin_workspace(user: User) -> tuple[Organization, KnowledgeBas
 
     org = _find_super_admin_workspace(user)
     roles = get_or_create_system_roles()
-    created_org = False
 
     if not org:
-        created_org = True
         slug = f"sa-espace-{str(user.id).replace('-', '')[:12]}"
         while db.session.query(Organization).filter_by(slug=slug).first():
             slug = f"{slug}-x"
@@ -131,25 +128,13 @@ def ensure_super_admin_workspace(user: User) -> tuple[Organization, KnowledgeBas
         member.status = "active"
         member.role_id = roles["org_admin"].id
 
+    db.session.commit()
     kb = (
         db.session.query(KnowledgeBase)
         .filter_by(organization_id=org.id)
         .order_by(KnowledgeBase.created_at.asc())
         .first()
     )
-    # Seed default KB only when provisioning a brand-new workspace
-    if created_org and not kb:
-        kb = KnowledgeBase(
-            organization_id=org.id,
-            name="Base de test",
-            description="Knowledge base personnelle du super admin",
-            rag_settings={"chunk_size": 800, "overlap": 120, "top_k": 5},
-            created_by=user.id,
-        )
-        db.session.add(kb)
-        db.session.flush()
-
-    db.session.commit()
     return org, kb
 
 
@@ -182,6 +167,7 @@ def organization_to_dict(org: Organization, include_usage: bool = False):
         "logo_url": resolve_logo_url(org),
         "status": org.status,
         "settings": settings,
+        "minio_bucket": org.minio_bucket,
         "is_super_admin_workspace": bool(settings.get("is_super_admin_workspace")),
         "created_at": org.created_at.isoformat() if org.created_at else None,
         "updated_at": org.updated_at.isoformat() if org.updated_at else None,
@@ -216,9 +202,11 @@ def create_organization(
 
     admin_email = (admin_email or "").strip().lower() or None
     admin_password = (admin_password or "").strip() or None
-    initial_quotas = dict(quota_service.DEFAULT_QUOTAS)
+    from app.services.platform_settings import default_org_quotas
+
+    initial_quotas = default_org_quotas()
     if isinstance(quotas, dict):
-        for key in quota_service.DEFAULT_QUOTAS:
+        for key in initial_quotas:
             if key in quotas and quotas[key] is not None:
                 try:
                     val = int(quotas[key])
@@ -236,6 +224,10 @@ def create_organization(
     )
     db.session.add(org)
     db.session.flush()
+
+    from app.services.storage_provision import ensure_org_minio_bucket
+
+    ensure_org_minio_bucket(org, create=True)
 
     roles = get_or_create_system_roles()
     meta: dict = {"admin_created": False, "invitation_token": None, "admin_email": None}
@@ -564,11 +556,17 @@ LOGO_MIME = {
 }
 
 
+def _org_assets_bucket(org: Organization) -> str:
+    """Bucket MinIO de l'organisation (créé avec l'espace), jamais le bucket global statique."""
+    from app.services.storage_provision import ensure_org_minio_bucket
+
+    return ensure_org_minio_bucket(org, create=True)
+
+
 def upload_organization_logo(org: Organization, file_storage):
     from datetime import datetime, timezone
     from uuid import uuid4
 
-    from flask import current_app
     from werkzeug.utils import secure_filename
 
     from app.services.documents.service import get_s3_client
@@ -590,8 +588,8 @@ def upload_organization_logo(org: Organization, file_storage):
     old = org.logo_url
     storage_key = f"org-logos/{org.id}/{uuid4().hex}.{ext}"
     client = get_s3_client()
-    bucket = current_app.config["MINIO_BUCKET"]
     try:
+        bucket = _org_assets_bucket(org)
         client.put_object(
             Bucket=bucket,
             Key=storage_key,
@@ -619,8 +617,6 @@ def upload_organization_logo(org: Organization, file_storage):
 
 
 def get_organization_logo_bytes(org: Organization):
-    from flask import current_app
-
     from app.services.documents.service import get_s3_client
 
     if not org.logo_url:
@@ -630,7 +626,8 @@ def get_organization_logo_bytes(org: Organization):
         return None, None
     client = get_s3_client()
     try:
-        obj = client.get_object(Bucket=current_app.config["MINIO_BUCKET"], Key=key)
+        bucket = _org_assets_bucket(org)
+        obj = client.get_object(Bucket=bucket, Key=key)
         return obj["Body"].read(), obj.get("ContentType") or "application/octet-stream"
     except Exception:
         return None, None
@@ -639,15 +636,14 @@ def get_organization_logo_bytes(org: Organization):
 def remove_organization_logo(org: Organization):
     from datetime import datetime, timezone
 
-    from flask import current_app
-
     from app.services.documents.service import get_s3_client
 
     key = org.logo_url
     if key and not key.startswith("http") and not key.startswith("data:") and not key.startswith("/"):
         try:
             client = get_s3_client()
-            client.delete_object(Bucket=current_app.config["MINIO_BUCKET"], Key=key)
+            bucket = _org_assets_bucket(org)
+            client.delete_object(Bucket=bucket, Key=key)
         except Exception:
             pass
     org.logo_url = None

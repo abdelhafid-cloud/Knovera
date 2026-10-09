@@ -1,4 +1,4 @@
-"""Redis pub/sub: le pipeline notifie le backend quand un document est indexé."""
+"""Redis pub/sub: écoute les événements du worker pipeline/ (côté API uniquement)."""
 
 from __future__ import annotations
 
@@ -20,31 +20,8 @@ def _redis(url: str) -> Redis:
     return Redis.from_url(url, decode_responses=True)
 
 
-def publish_pipeline_event(redis_url: str, event: str, payload: dict[str, Any]) -> None:
-    """Publié depuis le processus pipeline (worker)."""
-    body = {"event": event, **payload}
-    try:
-        client = _redis(redis_url)
-        client.publish(CHANNEL, json.dumps(body, ensure_ascii=False))
-        logger.info(
-            "[PIPELINE:REDIS] publish | channel=%s | event=%s | document_id=%s | status=%s | chunks=%s",
-            CHANNEL,
-            event,
-            payload.get("document_id"),
-            payload.get("status"),
-            payload.get("chunks"),
-        )
-    except Exception:
-        logger.exception(
-            "[PIPELINE:REDIS] Échec publication | channel=%s | event=%s | document_id=%s",
-            CHANNEL,
-            event,
-            payload.get("document_id"),
-        )
-
-
 def start_pipeline_callback_listener(app: Flask) -> None:
-    """Thread daemon côté API Flask : affiche le callback d'indexation dans le terminal backend."""
+    """Thread daemon : affiche le callback d'indexation dans le terminal backend."""
     global _listener_started
     if _listener_started:
         return

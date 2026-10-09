@@ -4,13 +4,13 @@ import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent 
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import {
-  ArrowRight,
   Building2,
   Eye,
   ImagePlus,
   Loader2,
   MoreHorizontal,
   PauseCircle,
+  Pencil,
   PlayCircle,
   Plus,
   Trash2,
@@ -182,16 +182,10 @@ export default function OrganizationsPage() {
     }
   };
 
-  const enterOrg = async (org: Organization) => {
-    setBusyId(org.id);
-    try {
-      await switchOrganization(org.id);
-      router.push("/organization");
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Erreur");
-    } finally {
-      setBusyId(null);
-    }
+  const enterOrg = (org: Organization) => {
+    // Ne pas bloquer la navigation sur refreshMe (sinon « Modifier » semble cassé)
+    void switchOrganization(org.id).catch(() => null);
+    router.push(`/super-admin/organizations/${org.id}`);
   };
 
   const suspendOrg = async (org: Organization) => {
@@ -369,11 +363,11 @@ export default function OrganizationsPage() {
                       <DropdownMenuContent align="end" className="w-48">
                         <DropdownMenuItem onClick={() => openFiche(org)}>
                           <Eye className="size-4" />
-                          Voir la fiche
+                          Afficher
                         </DropdownMenuItem>
                         <DropdownMenuItem onClick={() => enterOrg(org)}>
-                          <ArrowRight className="size-4" />
-                          Entrer dans l’org
+                          <Pencil className="size-4" />
+                          Modifier
                         </DropdownMenuItem>
                         <DropdownMenuSeparator />
                         {org.status === "active" ? (

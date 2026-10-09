@@ -2,7 +2,16 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { AlertTriangle, ArrowRight } from "lucide-react";
+import {
+  AlertTriangle,
+  ArrowRight,
+  Bot,
+  Building2,
+  FileText,
+  Library,
+  MessageSquare,
+  Users,
+} from "lucide-react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Pie, PieChart, XAxis, YAxis } from "recharts";
 import { api } from "@/lib/api";
 import type { PlatformAlert } from "@/lib/types";
@@ -74,14 +83,21 @@ const activityConfig = {
 const docsConfig = {
   indexed: { label: "Indexés", color: "var(--chart-1)" },
   processing: { label: "En cours", color: "var(--chart-2)" },
-  pending: { label: "En attente", color: "var(--chart-3)" },
-  failed: { label: "Échecs", color: "var(--chart-4)" },
-  other: { label: "Autres", color: "var(--chart-5)" },
+  pending: { label: "En attente", color: "var(--chart-5)" },
+  failed: { label: "Échecs", color: "var(--chart-3)" },
+  other: { label: "Autres", color: "var(--chart-4)" },
 } satisfies ChartConfig;
 
 const orgsConfig = {
   documents: { label: "Documents", color: "var(--chart-1)" },
   conversations: { label: "Conversations", color: "var(--chart-2)" },
+} satisfies ChartConfig;
+
+const orgStatusConfig = {
+  active: { label: "Actives", color: "var(--chart-1)" },
+  invited: { label: "Invitées", color: "var(--chart-2)" },
+  suspended: { label: "Suspendues", color: "var(--chart-3)" },
+  other: { label: "Autres", color: "var(--chart-5)" },
 } satisfies ChartConfig;
 
 export default function SuperAdminDashboard() {
@@ -105,15 +121,24 @@ export default function SuperAdminDashboard() {
     }));
   }, [stats]);
 
+  const orgsPie = useMemo(() => {
+    const entries = Object.entries(stats?.organizations_by_status || {});
+    if (!entries.length) return [];
+    return entries.map(([status, value]) => ({
+      status,
+      label: (orgStatusConfig as Record<string, { label: string }>)[status]?.label || status,
+      value,
+      fill: `var(--color-${status in orgStatusConfig ? status : "other"})`,
+    }));
+  }, [stats]);
+
   const topOrgs = stats?.top_organizations || [];
   const activity = stats?.activity_series || [];
   const alerts = stats?.alerts || [];
 
   return (
     <DashboardShell title="Overview" breadcrumbs={["Super Admin"]}>
-      <PageHeader
-        description="Indicateurs clés et tendances. Utilisez le sélecteur d’organisations pour entrer dans une entreprise."
-      />
+      <PageHeader description="Vue plateforme — cartes et tendances sur palette bleue." />
 
       {alerts.length > 0 ? (
         <div className="space-y-2">
@@ -125,15 +150,15 @@ export default function SuperAdminDashboard() {
                 href={alert.href || "#"}
                 className={cn(
                   "flex items-start gap-3 rounded-xl border px-4 py-3 transition-colors hover:bg-muted/40",
-                  alert.severity === "danger" && "border-destructive/40 bg-destructive/5",
-                  alert.severity === "warning" && "border-amber-500/40 bg-amber-500/5"
+                  alert.severity === "danger" && "border-primary/40 bg-primary/5",
+                  alert.severity === "warning" && "border-sky-500/35 bg-sky-500/5",
+                  alert.severity === "info" && "border-primary/30 bg-primary/5"
                 )}
               >
                 <AlertTriangle
                   className={cn(
-                    "mt-0.5 size-4 shrink-0",
-                    alert.severity === "danger" && "text-destructive",
-                    alert.severity === "warning" && "text-amber-600 dark:text-amber-400"
+                    "mt-0.5 size-4 shrink-0 text-primary",
+                    alert.severity === "warning" && "text-sky-600"
                   )}
                 />
                 <div className="min-w-0 flex-1">
@@ -149,18 +174,47 @@ export default function SuperAdminDashboard() {
         </div>
       ) : null}
 
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <StatCard label="Organisations" value={stats?.total_organizations} />
-        <StatCard label="Utilisateurs" value={stats?.total_users} />
-        <StatCard label="Documents" value={stats?.total_documents} />
-        <StatCard label="Conversations" value={stats?.total_conversations} />
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
+        <StatCard
+          label="Organisations"
+          value={stats?.total_organizations}
+          hint={`${stats?.active_organizations ?? 0} actives`}
+          icon={<Building2 className="size-4" />}
+        />
+        <StatCard
+          label="Utilisateurs"
+          value={stats?.total_users}
+          icon={<Users className="size-4" />}
+        />
+        <StatCard
+          label="Knowledge bases"
+          value={stats?.total_knowledge_bases}
+          icon={<Library className="size-4" />}
+        />
+        <StatCard
+          label="Assistants"
+          value={stats?.total_assistants}
+          icon={<Bot className="size-4" />}
+        />
+        <StatCard
+          label="Documents"
+          value={stats?.total_documents}
+          hint={`${stats?.documents_processing ?? 0} en cours`}
+          icon={<FileText className="size-4" />}
+        />
+        <StatCard
+          label="Échecs indexation"
+          value={stats?.documents_failed}
+          hint={`${stats?.total_conversations ?? 0} conversations`}
+          icon={<MessageSquare className="size-4" />}
+        />
       </div>
 
       <div className="grid gap-4 xl:grid-cols-3">
-        <Card className="xl:col-span-2">
+        <Card className="xl:col-span-2 border-primary/15">
           <CardHeader>
             <CardTitle>Activité (14 jours)</CardTitle>
-            <CardDescription>Nouveaux utilisateurs, documents et conversations par jour</CardDescription>
+            <CardDescription>Documents, conversations et utilisateurs (nuances de bleu)</CardDescription>
           </CardHeader>
           <CardContent>
             <ChartContainer config={activityConfig} className="aspect-[16/7] w-full">
@@ -175,7 +229,7 @@ export default function SuperAdminDashboard() {
                   dataKey="documents"
                   stroke="var(--color-documents)"
                   fill="var(--color-documents)"
-                  fillOpacity={0.25}
+                  fillOpacity={0.28}
                   strokeWidth={2}
                 />
                 <Area
@@ -183,7 +237,7 @@ export default function SuperAdminDashboard() {
                   dataKey="conversations"
                   stroke="var(--color-conversations)"
                   fill="var(--color-conversations)"
-                  fillOpacity={0.2}
+                  fillOpacity={0.22}
                   strokeWidth={2}
                 />
                 <Area
@@ -191,7 +245,7 @@ export default function SuperAdminDashboard() {
                   dataKey="users"
                   stroke="var(--color-users)"
                   fill="var(--color-users)"
-                  fillOpacity={0.15}
+                  fillOpacity={0.18}
                   strokeWidth={2}
                 />
               </AreaChart>
@@ -199,7 +253,7 @@ export default function SuperAdminDashboard() {
           </CardContent>
         </Card>
 
-        <Card>
+        <Card className="border-primary/15">
           <CardHeader className="flex flex-row items-start justify-between gap-2 space-y-0">
             <div>
               <CardTitle>Organisations</CardTitle>
@@ -234,10 +288,17 @@ export default function SuperAdminDashboard() {
                         <div className="flex items-center gap-2">
                           <p className="truncate text-sm font-medium">{org.name}</p>
                           {org.status && org.status !== "active" ? (
-                            <Badge variant="outline" className="shrink-0 text-[10px] capitalize">
+                            <Badge
+                              variant={org.status === "suspended" ? "muted" : "info"}
+                              className="shrink-0 text-[10px] capitalize"
+                            >
                               {org.status === "suspended" ? "Suspendue" : org.status}
                             </Badge>
-                          ) : null}
+                          ) : (
+                            <Badge variant="soft" className="shrink-0 text-[10px]">
+                              Active
+                            </Badge>
+                          )}
                         </div>
                         <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground">
                           <span>
@@ -258,12 +319,6 @@ export default function SuperAdminDashboard() {
                             </span>{" "}
                             docs
                           </span>
-                          <span>
-                            <span className="font-semibold tabular-nums text-foreground">
-                              {org.members ?? 0}
-                            </span>{" "}
-                            membres
-                          </span>
                         </div>
                       </div>
                       <ArrowRight className="size-4 shrink-0 text-muted-foreground" />
@@ -277,7 +332,7 @@ export default function SuperAdminDashboard() {
       </div>
 
       <div className="grid gap-4 xl:grid-cols-3">
-        <Card className="xl:col-span-2">
+        <Card className="xl:col-span-2 border-primary/15">
           <CardHeader>
             <CardTitle>Top organisations</CardTitle>
             <CardDescription>Volume documents & conversations</CardDescription>
@@ -308,29 +363,55 @@ export default function SuperAdminDashboard() {
           </CardContent>
         </Card>
 
-        <Card>
-          <CardHeader>
-            <CardTitle>Documents par statut</CardTitle>
-            <CardDescription>État du pipeline d’indexation</CardDescription>
-          </CardHeader>
-          <CardContent>
-            {docsPie.length === 0 ? (
-              <p className="py-16 text-center text-sm text-muted-foreground">Aucune donnée</p>
-            ) : (
-              <ChartContainer config={docsConfig} className="mx-auto aspect-square max-h-[260px]">
-                <PieChart>
-                  <ChartTooltip content={<ChartTooltipContent nameKey="status" hideLabel />} />
-                  <Pie data={docsPie} dataKey="value" nameKey="status" innerRadius={55} strokeWidth={2}>
-                    {docsPie.map((entry) => (
-                      <Cell key={entry.status} fill={entry.fill} />
-                    ))}
-                  </Pie>
-                  <ChartLegend content={<ChartLegendContent nameKey="status" />} />
-                </PieChart>
-              </ChartContainer>
-            )}
-          </CardContent>
-        </Card>
+        <div className="grid gap-4">
+          <Card className="border-primary/15">
+            <CardHeader>
+              <CardTitle>Documents par statut</CardTitle>
+              <CardDescription>État du pipeline d’indexation</CardDescription>
+            </CardHeader>
+            <CardContent>
+              {docsPie.length === 0 ? (
+                <p className="py-10 text-center text-sm text-muted-foreground">Aucune donnée</p>
+              ) : (
+                <ChartContainer config={docsConfig} className="mx-auto aspect-square max-h-[200px]">
+                  <PieChart>
+                    <ChartTooltip content={<ChartTooltipContent nameKey="status" hideLabel />} />
+                    <Pie data={docsPie} dataKey="value" nameKey="status" innerRadius={48} strokeWidth={2}>
+                      {docsPie.map((entry) => (
+                        <Cell key={entry.status} fill={entry.fill} />
+                      ))}
+                    </Pie>
+                    <ChartLegend content={<ChartLegendContent nameKey="status" />} />
+                  </PieChart>
+                </ChartContainer>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card className="border-sky-500/20">
+            <CardHeader>
+              <CardTitle>Orgs par statut</CardTitle>
+              <CardDescription>Répartition plateforme</CardDescription>
+            </CardHeader>
+            <CardContent>
+              {orgsPie.length === 0 ? (
+                <p className="py-8 text-center text-sm text-muted-foreground">Aucune donnée</p>
+              ) : (
+                <ChartContainer config={orgStatusConfig} className="mx-auto aspect-square max-h-[180px]">
+                  <PieChart>
+                    <ChartTooltip content={<ChartTooltipContent nameKey="status" hideLabel />} />
+                    <Pie data={orgsPie} dataKey="value" nameKey="status" innerRadius={40} strokeWidth={2}>
+                      {orgsPie.map((entry) => (
+                        <Cell key={entry.status} fill={entry.fill} />
+                      ))}
+                    </Pie>
+                    <ChartLegend content={<ChartLegendContent nameKey="status" />} />
+                  </PieChart>
+                </ChartContainer>
+              )}
+            </CardContent>
+          </Card>
+        </div>
       </div>
     </DashboardShell>
   );
