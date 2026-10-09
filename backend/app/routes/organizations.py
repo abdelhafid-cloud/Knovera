@@ -224,13 +224,9 @@ def update_organization(org_id):
 
 
 def _can_manage_org_logo(org) -> bool:
-    """Super admin : uniquement son espace. Admin org : uniquement son organisation."""
-    settings = org.settings or {}
+    """Super admin : toute organisation. Admin org : uniquement la sienne."""
     if g.is_super_admin:
-        return bool(
-            settings.get("is_super_admin_workspace")
-            and str(settings.get("owner_user_id") or "") == str(g.current_user.id)
-        )
+        return True
     membership = (
         db.session.query(OrganizationMember)
         .filter_by(user_id=g.current_user.id, organization_id=org.id, status="active")
