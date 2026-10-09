@@ -300,7 +300,18 @@ export default function UsersPage() {
       <PageHeader
         description="Seuls le Super Admin et les Org Admin peuvent créer des comptes. Aucune inscription libre."
         actions={
-          <Button onClick={() => setCreateOpen(true)}>
+          <Button
+            onClick={() => {
+              const workspace = orgs.find((o) => o.is_super_admin_workspace);
+              setForm((prev) => ({
+                ...prev,
+                organization_id: prev.organization_id || workspace?.id || "",
+                role_code: "org_member",
+                assistant_ids: [],
+              }));
+              setCreateOpen(true);
+            }}
+          >
             <Plus className="size-4" />
             Ajouter
           </Button>
@@ -592,7 +603,12 @@ export default function UsersPage() {
         </div>
       </AppModal>
 
-      <AppModal open={createOpen} onClose={() => !creating && setCreateOpen(false)} labelledBy="create-user-title">
+      <AppModal
+        open={createOpen}
+        onClose={() => !creating && setCreateOpen(false)}
+        labelledBy="create-user-title"
+        className="max-w-lg"
+      >
         <h2 id="create-user-title" className="text-lg font-semibold">
           Créer un utilisateur
         </h2>
@@ -676,6 +692,9 @@ export default function UsersPage() {
           ) : form.organization_id ? (
             <div className="space-y-2">
               <Label>Assistants autorisés</Label>
+              <p className="text-xs text-muted-foreground">
+                Ce user ne verra que les assistants cochés dans l’espace choisi.
+              </p>
               <div className="max-h-48 space-y-1 overflow-y-auto rounded-lg border border-border p-2">
                 {loadingAssistants ? (
                   <div className="flex justify-center py-4">
