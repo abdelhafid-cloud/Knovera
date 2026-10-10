@@ -1,4 +1,4 @@
-"""Transactional email via Resend (HTTPS) or SMTP. Dry-run when neither is configured."""
+"""Transactional email via Brevo, Resend, or SMTP. Dry-run when none is configured."""
 
 from __future__ import annotations
 
@@ -19,6 +19,45 @@ logger = logging.getLogger(__name__)
 
 def _smtp_configured() -> bool:
     return bool(current_app.config.get("SMTP_HOST") and current_app.config.get("MAIL_FROM"))
+
+
+def _send_via_brevo(to: str, subject: str, html_body: str, text_body: str, app_name: str) -> bool:
+    sender_email = (current_app.config.get("BREVO_SENDER_EMAIL") or "").strip()
+    if not sender_email:
+        logger.error("BREVO_SENDER_EMAIL manquant, email non envoyé à %s", to)
+        return False
+    sender_name = (current_app.config.get("BREVO_SENDER_NAME") or app_name or "Knovera").strip()
+    payload = json.dumps(
+        {
+            "sender": {"name": sender_name, "email": sender_email},
+            "to": [{"email": to}],
+            "subject": subject,
+            "htmlContent": html_body,
+            "textContent": text_body,
+        }
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        "https://api.brevo.com/v3/smtp/email",
+        data=payload,
+        headers={
+            "api-key": current_app.config.get("BREVO_API_KEY") or "",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "knovera",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            logger.info("Email sent via Brevo to %s (%s) status=%s", to, subject, response.status)
+            return True
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", "replace")[:500]
+        logger.error("Brevo a refusé l'email vers %s : %s %s", to, exc.code, detail)
+        return False
+    except Exception:
+        logger.exception("Échec Brevo vers %s", to)
+        return False
 
 
 def _resend_from(app_name: str) -> str:
@@ -72,6 +111,9 @@ def send_email(to: str, subject: str, html_body: str, text_body: str | None = No
 
     app_name = current_app.config.get("APP_NAME", "Knovera")
     text_body = text_body or _html_to_text(html_body)
+
+    if current_app.config.get("BREVO_API_KEY"):
+        return _send_via_brevo(to, subject, html_body, text_body, app_name)
 
     if current_app.config.get("RESEND_API_KEY"):
         return _send_via_resend(to, subject, html_body, text_body, _resend_from(app_name))

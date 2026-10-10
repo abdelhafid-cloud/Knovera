@@ -106,6 +106,9 @@ class Config:
     MAIL_FROM = os.getenv("MAIL_FROM", "").strip()
     RESEND_API_KEY = os.getenv("RESEND_API_KEY", "").strip()
     RESEND_FROM = os.getenv("RESEND_FROM", "").strip()
+    BREVO_API_KEY = os.getenv("BREVO_API_KEY", "").strip()
+    BREVO_SENDER_EMAIL = os.getenv("BREVO_SENDER_EMAIL", "").strip()
+    BREVO_SENDER_NAME = os.getenv("BREVO_SENDER_NAME", "Knovera").strip() or "Knovera"
 
     RATELIMIT_STORAGE_URI = os.getenv("RATELIMIT_STORAGE_URI") or (
         "memory://"
