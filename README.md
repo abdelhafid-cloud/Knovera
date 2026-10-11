@@ -2,6 +2,8 @@
 
 Knovera est une plateforme RAG multi-organisations. Chaque organisation indexe ses documents et interroge ses assistants. Les réponses s'appuient sur les knowledge bases de l'organisation, avec des rôles séparés et un journal d'audit.
 
+[![Architecture diagram of abdelhafid-cloud/knovera](https://gitdiagram.com/abdelhafid-cloud/knovera/diagram.png)](https://gitdiagram.com/abdelhafid-cloud/knovera?utm_source=readme&utm_medium=picture)
+
 ## Rôles
 
 | Rôle | Rôle dans le produit |
